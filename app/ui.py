@@ -543,9 +543,6 @@ def _replay(job_rel: str, answers_path: Path) -> None:
         with open(AUTOMATE_LOG, "w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(AUTOMATE_COLUMNS)
 
-        old, _printer = _printer, None
-        if old is not None:
-            old.close()
         p = get_printer(duration=REPLAY_JOB_SECONDS, layers=75)
         if getattr(p, "resume_after", None) != SLOW_RESUME_AFTER:
             try:
@@ -556,7 +553,9 @@ def _replay(job_rel: str, answers_path: Path) -> None:
                                "Set PRINTER_SIM=1 and PRINTER_SIM_FAST=0 in .env, then run it again.")
         p.connect()
         p.on_report(_on_printer_report)
-        _printer = p
+        old, _printer = _printer, p      # swap in one step: the page never sees "no printer"
+        if old is not None:
+            old.close()
 
         job = ROOT / job_rel
         _press_state, _press_t0, _press_job = p.state(), time.time(), job.name
@@ -643,6 +642,7 @@ def _automate_section() -> str:
       <div id="auto-live" style="flex-basis:100%"></div>
     </div>
     <div id="auto-error"></div>
+    <div class="card" id="auto-wait" style="display:none;border-color:#c98a00;background:#fff8e6"></div>
     <div class="card" id="auto-status"><div class="muted">No replay yet.</div></div>
     <div class="card">
       <table class="nums" id="auto-table">
@@ -678,6 +678,9 @@ def _automate_section() -> str:
         document.getElementById('auto-start').disabled = d.running;
         document.getElementById('auto-stop').disabled = !d.running;
         const mem = d.memory;
+        const wait = document.getElementById('auto-wait');
+        wait.style.display = d.waiting ? 'block' : 'none';
+        wait.textContent = d.waiting || '';
         document.getElementById('auto-status').innerHTML = '<div class="results">'
           + '<div><b>' + (d.running ? 'running' : 'idle') + '</b><div class="muted">replay</div></div>'
           + '<div>' + d.position + ' of ' + d.total + '<div class="muted">pictures handled</div></div>'
@@ -888,6 +891,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/print/connect":
+            # Automate rule 11 (Part 1 row 12): while a replay runs, Connect changes nothing.
+            if _auto["running"] and _printer is not None:
+                self._send_json({"ok": True, "target": f"{_printer.target} (a replay is running: Connect changed nothing)"})
+                return
             try:
                 p = _connect_printer()
                 self._send_json({"ok": True, "target": p.target})
@@ -1005,7 +1012,14 @@ class Handler(BaseHTTPRequestHandler):
             with _auto_lock:
                 lines = list(_auto["lines"])
             m = _auto["memory"]
-            self._send_json({"running": _auto["running"], "message": _auto["message"], "error": _auto["error"],
+            # Rule 12: the waiting banner. Text only; no button, and nothing is sent to the printer.
+            waiting = ""
+            if m.pause_reason and _latest_report.get("gcode_state") == "PAUSE":
+                why = "stringing seen" if m.pause_reason == "stringing" else "no answer for 3 pictures"
+                waiting = f"Paused by Automate ({why}). Waiting for a person to continue or stop."
+                if _auto["running"]:
+                    waiting += " On the simulator it resumes by itself after 30 s, in place of the person."
+            self._send_json({"waiting": waiting, "running": _auto["running"], "message": _auto["message"], "error": _auto["error"],
                              "position": _auto["position"], "total": _auto["total"], "lines": lines,
                              "memory": {"light_accepted": m.light_accepted, "failures": m.failures}})
             return

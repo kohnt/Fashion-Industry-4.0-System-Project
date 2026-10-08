@@ -19,6 +19,7 @@ Each row says what the printer does in one situation, and why. A label is one of
 | 9 | A live check runs | The printer gets no command | The live check tests only the connection to the detector |
 | 10 | **Pass, replay.** The saved answers in `predictions_gpt-6-luna.csv` are replayed in order on the simulator in slow mode | The printer pauses 2 times, on p015 and on p033. It reports `PAUSE` at each pause and `RUNNING` after each resume | The result you worked out before running, checked against the log |
 | 11 | **Pass, live check.** One picture is sent to the detector | The detector returns an answer (any label, with a confidence), shown beside the saved answer, and the printer gets no command | Tests the call to the detector, not the rules |
+| 12 | A replay is running, and Connect is pressed or the page is opened | Connect changes nothing, and the page says that a replay is running | Connecting replaces the simulator, and a replay on a replaced simulator is not a valid run |
 
 In the replay, nobody presses continue on a screen. The simulator resumes by itself 30 seconds after a pause, in place of the person.
 
@@ -82,13 +83,17 @@ def decide(answer: Answer | None, memory: Memory) -> Decision
 
 6. **Failed pictures.** (Rows 6 and 8.) A checked picture with no answer adds 1 to `failures`. A checked picture with an answer sets `failures` to 0. When `failures` reaches 3, `decide` returns `pause`, the tab sets `pause_reason` to `failures` and `failures` to 0. A dropped picture neither adds nor resets. So three checked pictures in a row with no answer pause the printer, and two of three do not.
 
-7. **One command.** (Row 3.) The tab calls `pause()` and no other command: it never calls `resume()`, `stop()` or `start()`. It does not call `pause()` again until the printer has reported `PAUSE`. If `pause()` raises, including `RateLimited`, the tab shows the text, and the log line says the pause failed. So the tab never undoes a person's decision, and it presses Pause once for each pause.
+7. **One command.** (Row 3.) The tab's decision code (`decide`, `on_picture` and the code that presses Pause) calls `pause()` and no other command: it never calls `resume()`, `stop()` or `start()`. The one exception is the replay (rule 9), which starts its own job on the simulator before the first picture; that call is setup, not a decision about a print, and it never runs on a real printer. The tab does not call `pause()` again until the printer has reported `PAUSE`. If `pause()` raises, including `RateLimited`, the tab shows the text, and the log line says the pause failed. So the tab never undoes a person's decision, and it presses Pause once for each pause.
 
 8. **Live check.** (Rows 9 and 11.) The live check calls `ask_vision` once and shows the answer beside the saved answer for the same picture. It calls no printer function that sends a command. If `ask_vision` raises, the tab shows the error text and nothing else happens.
 
 9. **Replay pacing.** (Rows 2, 8 and 10.) The replay waits until the simulator's own pause for the filament check is over and the printer is `RUNNING`, and then hands the tab the first picture. It hands over each next picture 15 seconds later, the spacing of the course team's pictures. It makes the simulator's job long enough to last past the last picture. A pause pressed by the tab lasts 30 seconds on the simulator, so two picture slots fall inside it, and rule 5 drops the pictures in them. So a replay takes about twelve minutes.
 
 10. **Log.** (Every row.) For each picture that arrives, the tab writes one line: the picture's file name, its layer, the label, the confidence, the printer's state, the action (`checked`, `dropped` or `pause`), and the Part 1 row number that decided it. A line with `pause` is written only once the printer has reported `PAUSE`. So for every line you can name the rule.
+
+11. **Connect during a replay.** (Row 12.) While a replay is running, the Connect button and the page's own connect when it opens do not close or replace the printer. They change nothing and show that a replay is running. Once the replay has ended, Connect works as it does on the Print tab (rule 2 of `contracts/printer.md`). So opening the page in a second tab during a replay does not end the run.
+
+12. **Waiting banner.** (Row 3.) While the printer is `PAUSE` and the tab pressed that Pause, the Automate tab shows one line: "Paused by Automate" and the reason (stringing, or no answer for 3 pictures), then "Waiting for a person to continue or stop". On the simulator it adds that the simulator resumes by itself after 30 seconds, in place of the person. The line has no button: the tab does not resume or stop (rule 7). It disappears when the printer is `RUNNING` again. A pause the tab did not press shows no such line. So a person looking at the page can see why the printer is paused and who decides next.
 
 ### The decisions
 
@@ -101,6 +106,8 @@ def decide(answer: Answer | None, memory: Memory) -> Decision
 **Rule 7** exists because the printer reports `PAUSE` about 3 to 5 seconds after the command, and a new picture can arrive in that gap. The real printer refuses commands that come less than 5 seconds apart. Without the wait, a second result would send a second command to a printer that is already stopping.
 
 **Rule 9** chose 15 seconds because that is the spacing of the pictures in `pictures.csv`. The simulator's own pause, about 18 seconds into a job and 15 seconds long, would otherwise swallow a picture that the real print would have checked, so the replay starts after it. On the real printer, a pause of this kind comes in the first minutes of a print, before layer 1, when no picture is checked (row 8).
+
+**Rule 11** exists because the page connects by itself every time it is opened, and Connect closes the printer it had and creates a new one. During a replay the replay holds the old simulator, whose state then stops changing, so every later picture reads as paused and is dropped; the log looks valid and is not.
 
 **The live check** uses one picture because one call is enough to show that the connection works, and each call costs money and waits at least 2 seconds after the last one.
 
@@ -116,6 +123,10 @@ def decide(answer: Answer | None, memory: Memory) -> Decision
 
 **The live check.** Choose the picture you predicted and run it. The detector's answer appears beside the saved one, and the printer's state does not change.
 
-**No other command.** Search `app/ui.py` for the Automate tab's code: it contains `pause()` and none of `resume()`, `stop()` or `start()`.
+**No other command.** Search `app/ui.py` for the Automate tab's decision code (`decide`, `on_picture`, `_auto_pause`): it contains `pause()` and none of `resume()`, `stop()` or `start()`. The only `start()` in the Automate code is the replay's own job on the simulator (rule 7).
+
+**The waiting banner.** During a replay, when the log shows a `pause` line, the Automate tab shows the banner with the reason and no buttons. About 30 seconds later it disappears. Throughout the replay, the simulator's own start-of-print pause shows no banner.
+
+**Connect during a replay.** Start a replay, then open the page in a second tab and press Connect on the Print tab. The Print tab says that a replay is running, the replay's table keeps filling, and the Monitor tab still shows the replay's printer.
 
 **The viva.** The TA asks: when the printer is paused and a picture arrives, why is it dropped and not checked later, and which row says so?

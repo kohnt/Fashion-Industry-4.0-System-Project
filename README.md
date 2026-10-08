@@ -94,7 +94,9 @@ After you change code or `.env` lines the page reads at startup, stop it and sta
 4. Watch the table fill. Each line has the picture, its layer, the label and confidence, the printer's state, the action (`checked`, `dropped` or `pause`) and the Part 1 row.
 5. When it finishes, the log is in `out/stage3_stringing_test_automate_log.csv`.
 
-While a replay runs, **do not reload the page, open it in a second tab or press Connect**. Each of these replaces the simulator and breaks the run.
+While the printer is paused by the tab, a yellow banner says why and that a person decides next. It has no buttons: the tab never resumes or stops a print. On the simulator the pause ends by itself after 30 seconds.
+
+During a replay, reloading the page or pressing Connect does nothing to the run.
 
 ### Live check (one API call)
 
@@ -134,8 +136,8 @@ out/        everything the page writes: G-code, job files, logs
 ## Known limitations
 
 - The Automate tab does not yet read live webcam pictures during a real print.
-- The replay starts its own job on the simulator. `contracts/automate.md` says the tab never starts a print; the replay is the one exception, and the contract has not yet been updated to say so.
-- Reloading the page or pressing Connect during a replay replaces the simulator and invalidates that run.
+- The replay starts its own job on the simulator. This is the one `start()` call in the Automate code, and `contracts/automate.md` (rule 7) says so.
+- While a replay runs, Connect and opening the page change nothing (rule 11), so the run cannot be replaced by accident.
 - The detector's answers vary from run to run; the saved answers are one recorded run.
 
 ## Origin
