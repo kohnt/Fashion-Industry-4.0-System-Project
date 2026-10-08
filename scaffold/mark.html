@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Label your pictures</title>
+<style>
+:root{--ink:#222;--muted:#666;--line:#ddd;--red:#990000;--bg:#fafafa}
+body{font-family:-apple-system,Helvetica,Arial,sans-serif;margin:0;background:var(--bg);color:var(--ink)}
+header{padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
+header b{font-size:18px}
+main{display:flex;gap:16px;padding:16px;flex-wrap:wrap}
+#wrap{max-width:100%;width:1150px;overflow:hidden;border:1px solid var(--line);background:#000;cursor:zoom-in}
+#pic{width:100%;display:block}
+#wrap.zoom{cursor:zoom-out;overflow:auto;max-height:80vh}#wrap.zoom #pic{width:250%;max-width:none}
+#side{min-width:260px;max-width:340px}
+button{font-size:16px;padding:10px 14px;margin:4px 4px 4px 0;border:1px solid #bbb;border-radius:6px;background:#fff;cursor:pointer}
+button.sel{background:var(--red);color:#fff;border-color:var(--red)}
+.big{font-size:22px;margin:6px 0}.muted{color:var(--muted);font-size:14px}
+#grid{display:flex;flex-wrap:wrap;gap:3px;margin-top:10px}
+#grid span{width:26px;height:18px;font-size:10px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #ccc;cursor:pointer;background:#fff}
+#grid span.none{background:#dfe9df}#grid span.light{background:#f3d9a8}#grid span.heavy{background:#e2a1a1}#grid span.cant{background:#ccc}
+#grid span.cur{outline:2px solid var(--red)}
+#status{margin-top:6px;font-size:14px}#status.bad{color:var(--red);font-weight:bold}
+textarea{width:100%;height:50px}
+</style></head><body>
+<header><b>Label your pictures</b>
+<span class="muted">Label what you can see in each picture, not what you know about the print. Keys: 1 none, 2 light, 3 heavy, 0 can't tell, ← →, Z zoom.</span></header>
+<main>
+<div><div id="wrap"><img id="pic" alt="picture of the part"></div><div class="muted" id="path"></div></div>
+<div id="side">
+<div class="big" id="title"></div>
+<div class="muted" id="count"></div>
+<div>
+<button data-m="none">1 None</button><button data-m="light">2 Light</button><button data-m="heavy">3 Heavy</button><button data-m="can't tell">0 Can't tell</button>
+</div>
+<div class="muted">None: no hairs visible. Light: one or a few thin hairs. Heavy: many hairs, thick strands, or a web across the gap. Can't tell: the gap is hidden (for example by the nozzle) or out of focus.</div>
+<div style="margin-top:8px"><button id="prev">← Previous</button><button id="next">Next →</button><button id="zoom">Z Zoom</button></div>
+<div class="muted" style="margin-top:8px">Note on this picture (optional)</div><textarea id="note"></textarea>
+<div id="status" class="muted"></div>
+<div id="grid"></div>
+</div></main>
+<script>
+const D=/*DATA*/null;
+const items=D.items, marks=D.marks; let i=0;
+const cls=m=>m==="can't tell"?'cant':(m||'');
+function firstUnmarked(){const k=items.findIndex(it=>!(marks[it['picture file']]||{}).mark);return k<0?0:k}
+function status(text,bad){const s=document.getElementById('status');s.textContent=text;s.className=bad?'bad':'muted'}
+function save(name){
+  const body={};body[name]=marks[name];
+  fetch('/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+   .then(r=>r.ok?r.json():Promise.reject(r.status))
+   .then(j=>status('Saved: '+j.saved+' of '+items.length+' labelled, in '+D.file))
+   .catch(()=>status('Not saved: is the terminal command still running? Start it again; labels saved so far are kept.',true));
+}
+function show(){
+  const it=items[i], m=marks[it['picture file']]||{};
+  document.getElementById('pic').src='/pic/'+encodeURIComponent(it['picture file']);
+  document.getElementById('path').textContent=it['picture file'];
+  document.getElementById('title').textContent=(it.layer!==''?'Layer '+it.layer+', ':'')+it['seconds since Print (s)']+' s after Print';
+  const done=items.filter(x=>(marks[x['picture file']]||{}).mark).length;
+  document.getElementById('count').textContent='Picture '+(i+1)+' of '+items.length+', labelled '+done+'. Labelling as '+D.who+'.';
+  document.querySelectorAll('button[data-m]').forEach(b=>b.classList.toggle('sel',b.dataset.m===m.mark));
+  document.getElementById('note').value=m.note||'';
+  document.querySelectorAll('#grid span').forEach((s,k)=>{s.className=cls((marks[items[k]['picture file']]||{}).mark)+(k===i?' cur':'')});
+}
+function mark(v){const n=items[i]['picture file'];marks[n]=Object.assign({note:''},marks[n],{mark:v});save(n);if(i<items.length-1)i++;show()}
+function go(d){i=Math.min(items.length-1,Math.max(0,i+d));show()}
+function zoom(){document.getElementById('wrap').classList.toggle('zoom')}
+document.querySelectorAll('button[data-m]').forEach(b=>b.onclick=()=>mark(b.dataset.m));
+document.getElementById('prev').onclick=()=>go(-1);
+document.getElementById('next').onclick=()=>go(1);
+document.getElementById('zoom').onclick=zoom;
+document.getElementById('wrap').onclick=zoom;
+let t=null;document.getElementById('note').oninput=e=>{const n=items[i]['picture file'];marks[n]=Object.assign({mark:''},marks[n],{note:e.target.value});clearTimeout(t);t=setTimeout(()=>save(n),600)};
+document.addEventListener('keydown',e=>{if(e.target.tagName==='TEXTAREA')return;
+  ({'1':()=>mark('none'),'2':()=>mark('light'),'3':()=>mark('heavy'),'0':()=>mark("can't tell"),'ArrowLeft':()=>go(-1),'ArrowRight':()=>go(1),'z':zoom,'Z':zoom}[e.key]||(()=>{}))()});
+const g=document.getElementById('grid');items.forEach((it,k)=>{const sp=document.createElement('span');sp.textContent=it.layer!==''?it.layer:k+1;sp.title=it['picture file'];sp.onclick=()=>{i=k;show()};g.appendChild(sp)});
+i=firstUnmarked();show();status('Labels are saved after every click, in '+D.file);
+</script></body></html>

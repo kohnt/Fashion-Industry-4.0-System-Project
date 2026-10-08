@@ -1,0 +1,44 @@
+Picture file,Layer,Detector's prediction,Detector's confidence,Detector's note,Detector
+p013_t0181.jpg,1,none,0.72,No visible hairs or strands across the exposed plate.,gpt-6-luna
+p014_t0196.jpg,2,none,0.72,No visible hairs or strands across the obscured print.,gpt-6-luna
+p015_t0211.jpg,3,light,0.68,A thin filament wisp trails from the plate.,gpt-6-luna
+p016_t0226.jpg,4,light,0.58,A small thin filament loop is visible near the print.,gpt-6-luna
+p017_t0241.jpg,5,light,0.89,A few thin green strands trail from the plate.,gpt-6-luna
+p018_t0256.jpg,5,light,0.87,A few thin plastic wisps trail from the nozzle to the plate.,gpt-6-luna
+p019_t0271.jpg,5,light,0.91,A few thin green wisps trail from the nozzle to the plate.,gpt-6-luna
+p020_t0286.jpg,5,light,0.93,A few thin wisps trail from the nozzle toward the plate.,gpt-6-luna
+p021_t0301.jpg,5,light,0.87,A few thin green strands trail from the nozzle to the plate.,gpt-6-luna
+p022_t0316.jpg,5,light,0.87,A few thin wispy strands hang toward the plate.,gpt-6-luna
+p023_t0331.jpg,5,light,0.91,A few thin wisps trail from the printhead to the plate.,gpt-6-luna
+p024_t0346.jpg,5,light,0.84,A few thin green wisps trail from the print.,gpt-6-luna
+p025_t0361.jpg,5,light,0.83,A few thin strands trail from the nozzle to the plate.,gpt-6-luna
+p026_t0376.jpg,6,none,0.58,No hairs visible in the exposed print area.,gpt-6-luna
+p027_t0391.jpg,8,light,0.86,A few thin green wisps trail near the print.,gpt-6-luna
+p028_t0406.jpg,10,light,0.58,A few thin green strands are visible on the bed.,gpt-6-luna
+p029_t0421.jpg,13,none,0.63,No hairs are clearly visible between the pillars.,gpt-6-luna
+p030_t0436.jpg,15,light,0.78,A few thin wisps trail upward from the print.,gpt-6-luna
+p031_t0451.jpg,18,light,0.53,A few faint wisps appear between the pillars,gpt-6-luna
+p032_t0466.jpg,20,light,0.79,A few thin wisps trail upward from the print.,gpt-6-luna
+p033_t0481.jpg,23,heavy,0.84,Many thin strands form a web between the pillars,gpt-6-luna
+p034_t0496.jpg,25,heavy,0.68,Several wispy strands form a web between the pillars,gpt-6-luna
+p035_t0511.jpg,27,heavy,0.76,Several wispy strands form a web between the pillars,gpt-6-luna
+p036_t0526.jpg,30,heavy,0.78,Many wispy strands form a web between the pillars.,gpt-6-luna
+p037_t0541.jpg,32,heavy,0.88,Many wispy strands form a web between the pillars.,gpt-6-luna
+p038_t0556.jpg,35,heavy,0.82,Dense wispy webbing visible between the pillars,gpt-6-luna
+p039_t0571.jpg,37,heavy,0.98,Many tangled strands form a web between the pillars.,gpt-6-luna
+p040_t0586.jpg,39,heavy,0.96,Many plastic strands form a web across the gap,gpt-6-luna
+p041_t0601.jpg,42,heavy,0.94,Many strands form a web across the gap.,gpt-6-luna
+p042_t0616.jpg,44,heavy,0.98,Many strands form a tangled web between the pillars.,gpt-6-luna
+p043_t0631.jpg,47,heavy,0.94,Many wispy strands form a web across the gap.,gpt-6-luna
+p044_t0646.jpg,49,heavy,0.95,Many strands form a web across the gap.,gpt-6-luna
+p045_t0661.jpg,52,heavy,0.97,Many thin strands form a web across the gap.,gpt-6-luna
+p046_t0676.jpg,54,heavy,0.89,Many green strands form a web between the pillars.,gpt-6-luna
+p047_t0691.jpg,56,heavy,0.98,Dense web of plastic strands spans the gap,gpt-6-luna
+p048_t0706.jpg,59,heavy,0.91,Many thin strands form a web across the gap.,gpt-6-luna
+p049_t0721.jpg,61,heavy,0.99,Dense web of strands spans the gap between pillars,gpt-6-luna
+p050_t0736.jpg,63,heavy,0.91,Many thin strands form a web across the gap.,gpt-6-luna
+p051_t0751.jpg,66,heavy,0.93,Many wispy strands form a web between the pillars,gpt-6-luna
+p052_t0766.jpg,68,heavy,0.97,Many wispy strands form a web across the gap.,gpt-6-luna
+p053_t0781.jpg,70,heavy,0.91,Many tangled plastic strands web across the gap.,gpt-6-luna
+p054_t0796.jpg,73,heavy,0.94,Many wispy strands form a web between the pillars.,gpt-6-luna
+p055_t0811.jpg,74,heavy,0.91,Dense wispy strands form a web between the pillars.,gpt-6-luna

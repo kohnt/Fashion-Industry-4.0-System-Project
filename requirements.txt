@@ -1,0 +1,8 @@
+# Needed to start the page (draws the Slice tab's layer pictures)
+matplotlib>=3.8
+
+# Optional: only for a real Bambu Lab printer (PRINTER_SIM=0)
+# bambulabs_api
+
+# Optional: only for capturing webcam pictures (python -m scaffold.capture)
+# opencv-python

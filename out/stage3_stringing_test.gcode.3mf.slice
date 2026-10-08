@@ -1,0 +1,11 @@
+{
+  "job": "stage3_stringing_test.gcode.3mf",
+  "gcode": "stage3_stringing_test.gcode",
+  "part": "stringing_test.stl",
+  "machine": "machine_a1mini_0.4.json",
+  "process": "process_0.20mm_standard_a1m.json",
+  "filament": "filament_stringing_test.json",
+  "sliced_at": "2026-09-25T15:57:53",
+  "slicer": "OrcaSlicer",
+  "fingerprint": "102b437ca0fdb4b88f734bd0f53989a606eaa8634fdb1598cf6f1eb952443ad2"
+}
