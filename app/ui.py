@@ -17,8 +17,9 @@ import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
+from app import track
 from app.toolpath import parse_gcode
 from scaffold.config import ROOT, STUDENT_NAME
 from scaffold.gcode import render_layer
@@ -58,23 +59,39 @@ _layer_zero_seen = False         # True once the layer has read 0 in this window
 _pause_from_page_t: float | None = None  # seconds since Print at which we pressed Pause, if pause() did not raise
 _seen_pause = False                      # the printer has reported PAUSE since that press
 
+# --- Track tab (contracts/tracking.md) -----------------------------------
+_track_pending: tuple[Path, float] | None = None           # (job, press time) of a Print-tab press not yet accepted
+_track_press: tuple[Path, float, list[str]] | None = None  # (job, press time, part numbers) of an accepted press
+
+
+_printer_lock = threading.RLock()   # requests arrive together when the page opens: one printer only
+
+
+def _watch(p) -> None:
+    """telemetry.md rule 1: register the callback, taking reports only from the current printer,
+    so a printer that has been replaced can never write into the log."""
+    p.on_report(lambda report: _on_printer_report(report) if p is _printer else None)
+
 
 def _get_printer():
     global _printer
-    if _printer is None:
-        _printer = get_printer()
-        _printer.connect()
-        _printer.on_report(_on_printer_report)
-    return _printer
+    with _printer_lock:
+        if _printer is None:
+            p = get_printer()
+            p.connect()
+            _printer = p
+            _watch(p)
+        return _printer
 
 
 def _connect_printer():
     """Connect button (rule 2): close() the old printer, read .env afresh, connect again."""
     global _printer
-    if _printer is not None:
-        _printer.close()
-        _printer = None
-    return _get_printer()
+    with _printer_lock:
+        if _printer is not None:
+            _printer.close()
+            _printer = None
+        return _get_printer()
 
 
 def _fmt1(v) -> str:
@@ -124,6 +141,7 @@ def _on_printer_report(report: dict) -> None:
         _state_changes.clear()
         _last_marked_state = ""
         _log_points = []
+        _create_records()
 
     if not _log_open or _log_press != _press_t0:
         return
@@ -154,6 +172,41 @@ def _on_printer_report(report: dict) -> None:
 
     if state in ("FINISH", "FAILED"):
         _log_open = False  # rule 4: ends here; no line comes after
+        _start_archive(state)
+
+
+def _create_records() -> None:
+    """tracking.md rule 1: the records start once the printer has accepted the job, which is
+    the state change after Print (printer.md rule 4), not start() returning."""
+    global _track_pending, _track_press
+    if _track_pending is None or _track_pending[1] != _press_t0:
+        return  # the Automate replay's job: no record
+    job, press_t = _track_pending
+    _track_pending = None
+    try:
+        _track_press = (job, press_t, track.create_records(job, press_t))
+        print(f"$ records {', '.join(_track_press[2])} for {job.name}")
+    except (OSError, ValueError, KeyError) as exc:
+        _track_press = None
+        print(f"[track] no records for {job.name}: {exc}")
+
+
+def _start_archive(final_state: str) -> None:
+    """tracking.md rule 4: archive a Print-tab print once, off the report thread."""
+    global _track_press
+    if _track_press is None or _track_press[1] != _press_t0:
+        return  # the Automate replay's job, or no records: nothing to archive
+    job, press_t, numbers = _track_press
+    _track_press = None
+    log_path = _log_path
+
+    def run():
+        try:
+            folder = track.archive_print(job, press_t, final_state, log_path, numbers)
+            print(f"$ archived {job.name} in {folder.relative_to(ROOT)}")
+        except Exception as exc:
+            print(f"[track] archive failed: {exc}")
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _parts() -> list[str]:
@@ -552,10 +605,11 @@ def _replay(job_rel: str, answers_path: Path) -> None:
             raise RuntimeError("The replay runs only on the simulator in slow mode. "
                                "Set PRINTER_SIM=1 and PRINTER_SIM_FAST=0 in .env, then run it again.")
         p.connect()
-        p.on_report(_on_printer_report)
-        old, _printer = _printer, p      # swap in one step: the page never sees "no printer"
-        if old is not None:
-            old.close()
+        with _printer_lock:
+            old, _printer = _printer, p  # swap in one step: the page never sees "no printer"
+            _watch(p)
+            if old is not None:
+                old.close()
 
         job = ROOT / job_rel
         _press_state, _press_t0, _press_job = p.state(), time.time(), job.name
@@ -704,6 +758,171 @@ def _automate_section() -> str:
     return page.replace("__JOBS__", job_options).replace("__ANSWERS__", answer_options).replace("__PICTURES__", picture_options)
 
 
+# ======================================================================
+# Track and Passport tabs (contracts/tracking.md, contracts/passport.md).
+# The record logic is in app/track.py; these send no printer command.
+# ======================================================================
+def _track_section() -> str:
+    return """
+    <div class="card">
+      <b>Records</b> <span class="muted">one per part, in out/records/; click a row to see its events</span>
+      <div id="track-msg" class="muted"></div>
+      <table class="nums" id="track-table"><thead><tr>
+        <td>part number</td><td>job</td><td>identifier</td><td>status</td><td>last event</td></tr></thead>
+        <tbody></tbody></table>
+    </div>
+    <div class="card" id="track-events" style="display:none"></div>
+    <div class="card">
+      <b>Add an event</b> <span class="muted">(rule 6)</span>
+      <div class="results" style="margin-top:0.6em">
+        <div class="field"><label>Part</label><select id="ev-part" class="track-parts"></select></div>
+        <div class="field"><label>Station</label><select id="ev-station">
+          <option value="inspection">inspection</option><option value="assembly">assembly</option></select></div>
+        <div class="field" style="flex:1"><label>What happened</label>
+          <input id="ev-what" type="text" style="padding:0.4em" placeholder="Taken off the plate from the left; marked with one dot"></div>
+        <div class="field"><label>Identifier (optional)</label>
+          <select id="ev-ident"><option value=""></option><option>one dot</option><option>two dots</option>
+          <option>engraved S4-01</option><option>the only cap</option></select></div>
+        <button onclick="trackEvent()">Add event</button>
+      </div>
+    </div>
+    <div class="card">
+      <b>Fit an assembly</b> <span class="muted">(rule 7: the holder, such as the cap, and the parts it holds)</span>
+      <div class="results" style="margin-top:0.6em">
+        <div class="field"><label>Holder</label><select id="fit-holder" class="track-parts"></select></div>
+        <div class="field"><label>Parts it holds</label><div id="fit-parts"></div></div>
+        <button onclick="trackFit()">Fit</button>
+      </div>
+    </div>
+    <div class="card">
+      <b>Reject a part</b> <span class="muted">(rule 8: the reason is its last event)</span>
+      <div class="results" style="margin-top:0.6em">
+        <div class="field"><label>Part</label><select id="rej-part" class="track-parts"></select></div>
+        <div class="field"><label>Station</label><select id="rej-station">
+          <option value="inspection">inspection</option><option value="assembly">assembly</option></select></div>
+        <div class="field" style="flex:1"><label>Reason</label>
+          <input id="rej-reason" type="text" style="padding:0.4em" placeholder="stringing between the pillars"></div>
+        <button onclick="trackReject()">Reject</button>
+      </div>
+    </div>
+    <script>
+    function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+    let trackRecords = [], trackShown = '';
+    function shortJob(j) { return j.split('__')[0].replace('.gcode.3mf', ''); }
+    function trackLabel(r) { return r.part_number + (r.identifier ? ' (' + r.identifier + ')' : '') + ' ' + shortJob(r.job); }
+    async function trackCall(url, msgId) {
+      const res = await fetch(url); const d = await res.json();
+      document.getElementById(msgId || 'track-msg').textContent = d.error ? 'Error: ' + d.error : 'Saved.';
+      await pollTrack(); return !d.error;
+    }
+    function q(o) { return Object.entries(o).map(([k, v]) => k + '=' + encodeURIComponent(v)).join('&'); }
+    async function trackEvent() {
+      if (await trackCall('/track/event?' + q({part: ev_val('ev-part'), station: ev_val('ev-station'),
+            what: ev_val('ev-what'), identifier: ev_val('ev-ident')}))) document.getElementById('ev-what').value = '';
+    }
+    async function trackFit() {
+      const parts = [...document.querySelectorAll('#fit-parts input:checked')].map(c => c.value);
+      await trackCall('/track/fit?' + q({holder: ev_val('fit-holder'), parts: parts.join(',')}));
+    }
+    async function trackReject() {
+      if (await trackCall('/track/reject?' + q({part: ev_val('rej-part'), station: ev_val('rej-station'),
+            reason: ev_val('rej-reason')}))) document.getElementById('rej-reason').value = '';
+    }
+    function ev_val(id) { return document.getElementById(id).value; }
+    function showEvents(pn) {
+      trackShown = pn; const r = trackRecords.find(x => x.part_number === pn); const box = document.getElementById('track-events');
+      if (!r) { box.style.display = 'none'; return; }
+      box.style.display = 'block';
+      box.innerHTML = '<b>' + esc(r.part_number) + '</b> <span class="muted">fingerprint ' + esc(r.fingerprint.slice(0, 16)) +
+        '&hellip;, job ' + esc(r.job) + (r.print_folder ? ', archive ' + esc(r.print_folder) : '') +
+        '</span><table class="nums">' + r.events.map(e => '<tr><td>' + esc(e.time) + '</td><td>' + esc(e.station) +
+        '</td><td>' + esc(e.what) + '</td></tr>').join('') + '</table>';
+    }
+    async function pollTrack() {
+      try {
+        const d = await (await fetch('/track/records')).json();
+        trackRecords = d.records;
+        document.querySelector('#track-table tbody').innerHTML = trackRecords.length ? trackRecords.map(r =>
+          '<tr style="cursor:pointer" onclick="showEvents(\\'' + esc(r.part_number) + '\\')"><td><b>' + esc(r.part_number) +
+          '</b></td><td>' + esc(shortJob(r.job)) + '</td><td>' + esc(r.identifier) + '</td><td>' + esc(r.status) +
+          '</td><td>' + esc(r.events[r.events.length - 1].what) + '</td></tr>').join('')
+          : '<tr><td class="muted">No records yet. Press Print on the Print tab.</td></tr>';
+        const open = trackRecords.filter(r => r.status !== 'rejected');
+        document.querySelectorAll('.track-parts').forEach(sel => {
+          const keep = sel.value;
+          sel.innerHTML = open.map(r => '<option value="' + esc(r.part_number) + '">' + esc(trackLabel(r)) + '</option>').join('');
+          if (open.some(r => r.part_number === keep)) sel.value = keep;
+        });
+        const box = document.getElementById('fit-parts'), ticked = new Set([...box.querySelectorAll('input:checked')].map(c => c.value));
+        box.innerHTML = open.filter(r => !r.fitted_in && !r.fitted_with.length).map(r => '<label style="display:block"><input type="checkbox" value="' +
+          esc(r.part_number) + '"' + (ticked.has(r.part_number) ? ' checked' : '') + '> ' + esc(trackLabel(r)) + '</label>').join('') || '<span class="muted">none free</span>';
+        if (trackShown) showEvents(trackShown);
+        const dl = document.getElementById('passport-list');
+        if (dl) dl.innerHTML = trackRecords.map(r => '<option value="' + esc(r.part_number) + '">' + esc(trackLabel(r)) + '</option>').join('');
+      } catch (e) { /* keep the last view on a transient error */ }
+    }
+    pollTrack();
+    setInterval(pollTrack, 4000);
+    </script>
+    """
+
+
+def _passport_section() -> str:
+    return """
+    <div class="card">
+      <div class="results">
+        <div class="field" style="flex:1"><label>Part number (from the part's identifier)</label>
+          <input id="pp-part" list="passport-list" type="text" style="padding:0.4em" placeholder="3bb338ef-01"></div>
+        <datalist id="passport-list"></datalist>
+        <button onclick="openPassport(document.getElementById('pp-part').value)">Open passport</button>
+      </div>
+    </div>
+    <div id="pp-card"></div>
+    <style>
+      .pp { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); margin-bottom: 1.2em; }
+      .pp h2 { background: var(--red); color: white; margin: 0; padding: 0.7em 1em; font-size: 1.15em; }
+      .pp table { width: 100%; border-collapse: collapse; }
+      .pp td { padding: 0.7em 1em; border-bottom: 1px solid var(--border); vertical-align: top; }
+      .pp td:first-child { font-weight: 600; width: 9em; color: var(--muted); }
+      .pp .actions { padding: 1em; display: flex; gap: 0.8em; flex-wrap: wrap; align-items: center; }
+      .pp button.ok { background: #2a7a2a; }
+      .pp button:disabled { background: #aaa; cursor: default; }
+    </style>
+    <script>
+    let ppShown = '';
+    async function openPassport(pn) {
+      pn = (pn || '').trim(); ppShown = pn; document.getElementById('pp-part').value = pn;
+      const box = document.getElementById('pp-card');
+      const d = await (await fetch('/passport/data?part=' + encodeURIComponent(pn))).json();
+      if (d.error) { box.innerHTML = '<div class="card">' + esc(d.error) + '</div>'; return; }
+      const asm = d.assembly.parts.length ? d.assembly.text + ' ' + d.assembly.parts.map(p =>
+          '<a href="#" onclick="openPassport(\\'' + esc(p) + '\\'); return false">' + esc(p) + '</a>').join(', ') : esc(d.assembly.text);
+      const data = d.print_folder ? (d.print_data.map(f => '<a href="/' + esc(encodeURI(f)) + '" target="_blank">' +
+          esc(f.split('/').slice(2).join('/') || f) + '</a>').join('<br>') || 'Folder is empty') : 'Not archived';
+      const dis = d.can_decide ? '' : ' disabled';
+      box.innerHTML = '<div class="pp"><h2>Passport: ' + esc(d.part_number) + ' (' + esc(d.identifier) + ')</h2><table>' +
+        '<tr><td>Print</td><td>' + esc(d.print) + '</td></tr>' +
+        '<tr><td>Job</td><td>' + esc(d.job) + '</td></tr>' +
+        '<tr><td>Inspection</td><td>' + esc(d.inspection) + '</td></tr>' +
+        '<tr><td>Assembly</td><td>' + asm + '</td></tr>' +
+        '<tr><td>Status</td><td><b>' + esc(d.status) + '</b></td></tr>' +
+        '<tr><td>Print data</td><td>' + data + '</td></tr></table>' +
+        '<div class="actions"><button class="ok" onclick="ppDecide(\\'accept\\')"' + dis + '>Accept for production run</button>' +
+        '<input id="pp-reason" type="text" style="padding:0.4em; flex:1" placeholder="reason for rejecting"' + dis + '>' +
+        '<button onclick="ppDecide(\\'reject\\')"' + dis + '>Reject</button>' +
+        '<span id="pp-msg" class="muted"></span></div></div>';
+    }
+    async function ppDecide(decision) {
+      const reason = (document.getElementById('pp-reason') || {}).value || '';
+      const d = await (await fetch('/passport/decide?part=' + encodeURIComponent(ppShown) + '&decision=' + decision +
+                                   '&reason=' + encodeURIComponent(reason))).json();
+      if (d.error) { document.getElementById('pp-msg').textContent = 'Error: ' + d.error; return; }
+      openPassport(ppShown); pollTrack();
+    }
+    </script>
+    """
+
+
 def _page(parts: list[str], profiles: list[str], selected_part: str = "", selected_profile: str = "",
           layer: int = 1, num_layers: int = 0, error: str = "", picture: str = "",
           nums: dict | None = None) -> str:
@@ -783,6 +1002,8 @@ def _page(parts: list[str], profiles: list[str], selected_part: str = "", select
   <button id="tab-btn-print" onclick="showTab('print')">Print</button>
   <button id="tab-btn-monitor" onclick="showTab('monitor')">Monitor</button>
   <button id="tab-btn-automate" onclick="showTab('automate')">Automate</button>
+  <button id="tab-btn-track" onclick="showTab('track')">Track</button>
+  <button id="tab-btn-passport" onclick="showTab('passport')">Passport</button>
 </div>
 <div id="tab-slice" class="tab-panel active">
 <form method="get" action="/slice" class="card">
@@ -803,9 +1024,15 @@ def _page(parts: list[str], profiles: list[str], selected_part: str = "", select
 <div id="tab-automate" class="tab-panel">
 {_automate_section()}
 </div>
+<div id="tab-track" class="tab-panel">
+{_track_section()}
+</div>
+<div id="tab-passport" class="tab-panel">
+{_passport_section()}
+</div>
 <script>
 function showTab(name) {{
-  for (const n of ['slice', 'print', 'monitor', 'automate']) {{
+  for (const n of ['slice', 'print', 'monitor', 'automate', 'track', 'passport']) {{
     document.getElementById('tab-' + n).classList.toggle('active', name === n);
     document.getElementById('tab-btn-' + n).classList.toggle('active', name === n);
   }}
@@ -839,14 +1066,46 @@ class Handler(BaseHTTPRequestHandler):
             return
         data = path.read_bytes()
         self.send_response(200)
-        ctype = "image/png" if path.suffix == ".png" else "application/octet-stream"
+        ctype = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".csv": "text/csv; charset=utf-8",
+                 ".json": "application/json; charset=utf-8", ".slice": "application/json; charset=utf-8",
+                 ".txt": "text/plain; charset=utf-8"}.get(path.suffix.lower(), "application/octet-stream")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
 
+    def _track_route(self, path: str, q: dict) -> None:
+        """Track and Passport tabs (contracts/tracking.md, contracts/passport.md). No printer command."""
+        try:
+            if path == "/track/records":
+                self._send_json({"records": track.list_records(), "stations": list(track.PERSON_STATIONS)})
+            elif path == "/track/event":
+                track.person_event(q.get("part", ""), q.get("station", ""), q.get("what", ""), q.get("identifier", ""))
+                self._send_json({"ok": True})
+            elif path == "/track/fit":
+                track.fit(q.get("holder", ""), [p for p in q.get("parts", "").split(",") if p])
+                self._send_json({"ok": True})
+            elif path == "/track/reject":
+                station = q.get("station", "")
+                if station not in track.PERSON_STATIONS:
+                    raise ValueError("Station must be inspection or assembly.")
+                track.reject(q.get("part", ""), q.get("reason", ""), track.STATIONS[station])
+                self._send_json({"ok": True})
+            elif path == "/passport/data":
+                card = track.passport(q.get("part", ""))
+                if card is None:
+                    raise ValueError(f"No record for {q.get('part', '').strip()}")
+                self._send_json(card)
+            elif path == "/passport/decide":
+                track.decide(q.get("part", ""), q.get("decision", ""), q.get("reason", ""))
+                self._send_json({"ok": True})
+            else:
+                self._send_json({"error": "not found"}, status=404)
+        except ValueError as exc:
+            self._send_json({"error": str(exc)}, status=400)
+
     def do_GET(self) -> None:
-        global _press_state, _press_t0, _press_job, _last_stop_was_us, _pause_from_page_t, _seen_pause
+        global _press_state, _press_t0, _press_job, _last_stop_was_us, _pause_from_page_t, _seen_pause, _track_pending
         parsed = urlparse(self.path)
         qs = parse_qs(parsed.query)
 
@@ -856,6 +1115,20 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path.startswith("/out/"):
             self._send_file(ROOT / parsed.path.lstrip("/"))
+            return
+
+        if parsed.path.startswith("/prints/"):
+            # passport.md rule 6: archived files are served from prints/ only.
+            path = (ROOT / unquote(parsed.path.lstrip("/"))).resolve()
+            if path.is_relative_to(track.PRINTS_DIR.resolve()):
+                self._send_file(path)
+            else:
+                self.send_response(404)
+                self.end_headers()
+            return
+
+        if parsed.path.startswith("/track/") or parsed.path.startswith("/passport/"):
+            self._track_route(parsed.path, {k: v[0] for k, v in qs.items()})
             return
 
         if parsed.path == "/slice":
@@ -916,10 +1189,15 @@ class Handler(BaseHTTPRequestHandler):
                 _press_state = p.state()
                 _press_t0 = time.time()
                 _press_job = job.name
+                # tracking.md rule 1: the records are written once the printer reports the new
+                # job (_create_records, from the report callback), not when start() returns. Set
+                # before start(), since that report can arrive before start() returns.
+                _track_pending = (job, _press_t0)
                 try:
                     p.start(job)
                 except Exception:
                     _press_state, _press_t0, _press_job = prev
+                    _track_pending = None   # refused: no record
                     raise
                 _last_stop_was_us = False
                 _pause_from_page_t = None

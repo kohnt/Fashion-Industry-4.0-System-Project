@@ -6,7 +6,7 @@ and checks pictures of the print for **stringing** (thin plastic hairs between
 the parts of a print). When the detector sees stringing, the Automate tab pauses
 the printer. A person then decides to continue or stop.
 
-It has four tabs:
+It has six tabs:
 
 | Tab | What it does |
 |---|---|
@@ -14,6 +14,8 @@ It has four tabs:
 | **Print** | Sends a sliced job to the printer or simulator, shows its state, Pause and Stop buttons |
 | **Monitor** | Records every printer report to a CSV log and plots temperature and layer against time |
 | **Automate** | Replays saved detector answers on the simulator, or asks the real detector about one picture |
+| **Track** | Keeps one record per printed part, archives each print's data, and adds inspection, assembly and rejection events |
+| **Passport** | Shows one part's record to a brand's QC manager, who accepts or rejects it for the production run |
 
 ## What the Automate tab does today
 
@@ -110,6 +112,26 @@ During a replay, reloading the page or pressing Connect does nothing to the run.
 2. **Print** tab: choose the job and press **Print**. The state goes `PREPARE`, `RUNNING`, `FINISH`. **Pause** works only while `RUNNING`. There is no Resume button: on a real printer you resume on its touchscreen. The simulator resumes by itself after 30 seconds.
 3. **Monitor** tab: the latest report and two plots (temperature, layer). The log is `out/<job name>_telemetry.csv`. Printing the same job again replaces its log.
 
+### Track and Passport (Stage 4)
+
+The rules are in `contracts/tracking.md` and `contracts/passport.md`.
+
+1. **Print tab**: print `stage4_peg_pair`, `stage4_base` and `stage4_cap` (the jobs are already in `out/`).
+   Once the printer reports the new job, the Track tab writes one record per part in `out/records/`,
+   named by part number: the first 8 characters of the job's fingerprint and a count, such as
+   `3bb338ef-01` and `3bb338ef-02` for the two pegs. A part number is never reused.
+2. When the print reports `FINISH` or `FAILED`, its data (telemetry log, job file, `.slice` record, STL,
+   and any Automate log or webcam pictures written after Print) is copied into
+   `prints/<short job name>_<YYYY-MM-DD_HHMM>/`, and each record gets the print's events.
+3. **Track tab**: add what happened at the inspection or assembly station (and mark an identifier,
+   such as `one dot`), fit the cap over the base and the pegs, or reject a part with a reason.
+   Events are only ever added; a rejected record takes no more.
+4. **Passport tab**: type or pick a part number. The card shows the print line, the job, the latest
+   inspection, the assembly (each part number opens its own passport), the status and links to the
+   archived files. **Accept for production run** or **Reject** (with a reason) adds the decision event.
+
+If the page is stopped during a print, that print is not archived and its records stay `printing`.
+
 ### Using a real printer
 
 Set `PRINTER_SIM=0` and the three printer lines in `.env`, install `bambulabs_api`, start the page and press Connect on the Print tab. A person presses Print. Only a person resumes a paused print.
@@ -124,13 +146,14 @@ Set `PRINTER_SIM=0` and the three printer lines in `.env`, install `bambulabs_ap
 ## Folder layout
 
 ```
-app/        the page (ui.py) and the G-code reader (toolpath.py)
+app/        the page (ui.py), the G-code reader (toolpath.py), part records and passports (track.py)
 scaffold/   printer wrapper with simulator, slicer call, detector call, G-code drawing, webcam capture
 contracts/  the written specifications the code follows; start with automate.md
-parts/      stringing_test.stl
+parts/      stringing_test.stl and the Stage 4 clasp parts (base, peg, peg pair, cap)
 profiles/   machine, filament and process profiles for the A1 mini
 data/       saved detector answers for the replay
-out/        everything the page writes: G-code, job files, logs
+out/        everything the page writes: G-code, job files, logs, part records (out/records/)
+prints/     one archive folder per print, made when it ends
 ```
 
 ## Known limitations

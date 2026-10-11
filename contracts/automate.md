@@ -6,20 +6,20 @@ Stage 3. The detector's result meets the pause decision in the application. The 
 
 Each row says what the printer does in one situation, and why. A label is one of `none`, `light` or `heavy`. A confidence is a number from 0 to 1 that says how sure the detector is. A checked picture is a picture the tab sends to the detector (see row 8).
 
-| # | Situation | Action | Reason |
-|---|---|---|---|
-| 1 | No person has continued yet, and a checked picture is `light` or `heavy` at a confidence of 0.60 or above | The tab pauses the printer | Catch stringing without watching the print |
-| 2 | The printer is paused, for any reason | The tab checks no pictures until the printer is `RUNNING` again | Saves API calls |
-| 3 | The tab has paused the printer | It waits for a person at the printer to continue or stop. The tab never resumes the print and never stops it itself | The part is small, so someone is near. A person gives the most flexibility, and the decision is theirs |
-| 4 | A person continued after a stringing pause | `light` is accepted from then on. Only `heavy` at 0.60 or above pauses again | Do not pause too much |
-| 5 | A confidence is exactly 0.60 | It counts, in every rule | One threshold, easy to explain and test |
-| 6 | The detector gives no answer on 3 checked pictures in a row | The tab pauses the printer | One failure is a blip. Three in a row, about 45 seconds, means the detector is down. At no more than 5% failures, a run of 3 is about 0.5% likely over the whole print |
-| 7 | A person resumes after a pause caused by failed pictures | Nothing changes. `light` still causes the first pause later | `light` is accepted only after a person has looked at stringing |
-| 8 | A picture is from before layer 1 | It is not checked, and it does not count toward the 3 failures | Nothing to string yet, fewer API calls, and fewer pauses from network blips |
-| 9 | A live check runs | The printer gets no command | The live check tests only the connection to the detector |
-| 10 | **Pass, replay.** The saved answers in `predictions_gpt-6-luna.csv` are replayed in order on the simulator in slow mode | The printer pauses 2 times, on p015 and on p033. It reports `PAUSE` at each pause and `RUNNING` after each resume | The result you worked out before running, checked against the log |
-| 11 | **Pass, live check.** One picture is sent to the detector | The detector returns an answer (any label, with a confidence), shown beside the saved answer, and the printer gets no command | Tests the call to the detector, not the rules |
-| 12 | A replay is running, and Connect is pressed or the page is opened | Connect changes nothing, and the page says that a replay is running | Connecting replaces the simulator, and a replay on a replaced simulator is not a valid run |
+| #   | Situation                                                                                                               | Action                                                                                                                        | Reason                                                                                                                                                                 |
+| --- | ----------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | No person has continued yet, and a checked picture is `light` or `heavy` at a confidence of 0.60 or above               | The tab pauses the printer                                                                                                    | Catch stringing without watching the print                                                                                                                             |
+| 2   | The printer is paused, for any reason                                                                                   | The tab checks no pictures until the printer is `RUNNING` again                                                               | Saves API calls                                                                                                                                                        |
+| 3   | The tab has paused the printer                                                                                          | It waits for a person at the printer to continue or stop. The tab never resumes the print and never stops it itself           | The part is small, so someone is near. A person gives the most flexibility, and the decision is theirs                                                                 |
+| 4   | A person continued after a stringing pause                                                                              | `light` is accepted from then on. Only `heavy` at 0.60 or above pauses again                                                  | Do not pause too much                                                                                                                                                  |
+| 5   | A confidence is exactly 0.60                                                                                            | It counts, in every rule                                                                                                      | One threshold, easy to explain and test                                                                                                                                |
+| 6   | The detector gives no answer on 3 checked pictures in a row                                                             | The tab pauses the printer                                                                                                    | One failure is a blip. Three in a row, about 45 seconds, means the detector is down. At no more than 5% failures, a run of 3 is about 0.5% likely over the whole print |
+| 7   | A person resumes after a pause caused by failed pictures                                                                | Nothing changes. `light` still causes the first pause later                                                                   | `light` is accepted only after a person has looked at stringing                                                                                                        |
+| 8   | A picture is from before layer 1                                                                                        | It is not checked, and it does not count toward the 3 failures                                                                | Nothing to string yet, fewer API calls, and fewer pauses from network blips                                                                                            |
+| 9   | A live check runs                                                                                                       | The printer gets no command                                                                                                   | The live check tests only the connection to the detector                                                                                                               |
+| 10  | **Pass, replay.** The saved answers in `predictions_gpt-6-luna.csv` are replayed in order on the simulator in slow mode | The printer pauses 2 times, on p015 and on p033. It reports `PAUSE` at each pause and `RUNNING` after each resume             | The result you worked out before running, checked against the log                                                                                                      |
+| 11  | **Pass, live check.** One picture is sent to the detector                                                               | The detector returns an answer (any label, with a confidence), shown beside the saved answer, and the printer gets no command | Tests the call to the detector, not the rules                                                                                                                          |
+| 12  | A replay is running, and Connect is pressed or the page is opened                                                       | Connect changes nothing, and the page says that a replay is running                                                           | Connecting replaces the simulator, and a replay on a replaced simulator is not a valid run                                                                             |
 
 In the replay, nobody presses continue on a screen. The simulator resumes by itself 30 seconds after a pause, in place of the person.
 
@@ -37,13 +37,13 @@ The tab does not slice, does not print, does not resume and does not stop. It do
 
 ### Function and data types
 
-| Function | From | What the tab uses it for |
-|---|---|---|
-| `ask_vision(picture)` | `scaffold/vision.py` | Sends one picture to the detector and returns its answer. Raises `VisionError` if the call fails. Used only in the live check |
-| `get_printer()`, `connect()`, `close()` | `scaffold/printer.py` | The printer, as on the Print tab |
-| `state()` | the same | The printer's state, one word |
-| `on_report(callback)` | the same | Delivers each report, so the tab sees the state change from `PAUSE` to `RUNNING` |
-| `pause()` | the same | Asks the printer to pause. The only command the tab sends |
+| Function                                | From                  | What the tab uses it for                                                                                                      |
+| --------------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `ask_vision(picture)`                   | `scaffold/vision.py`  | Sends one picture to the detector and returns its answer. Raises `VisionError` if the call fails. Used only in the live check |
+| `get_printer()`, `connect()`, `close()` | `scaffold/printer.py` | The printer, as on the Print tab                                                                                              |
+| `state()`                               | the same              | The printer's state, one word                                                                                                 |
+| `on_report(callback)`                   | the same              | Delivers each report, so the tab sees the state change from `PAUSE` to `RUNNING`                                              |
+| `pause()`                               | the same              | Asks the printer to pause. The only command the tab sends                                                                     |
 
 Functions you write:
 
@@ -54,18 +54,18 @@ def decide(answer: Answer | None, memory: Memory) -> Decision
 
 `on_picture` handles one arriving picture and calls `decide` only if the picture is checked (rules 2 and 5). `decide` holds the pause rules (rules 3, 4 and 6) and sends nothing.
 
-| Type | Field | What it holds | Unit |
-|---|---|---|---|
-| `Picture` | `file` | The picture's file name, such as `p013_t0181.jpg` | none |
-| | `seconds` | Seconds since Print when it was taken | s |
-| | `layer` | The layer from `pictures.csv`; empty before layer 1 | none |
-| `Answer` | `label` | `none`, `light` or `heavy` | none |
-| | `confidence` | How sure the detector is, from 0 to 1 | none |
-| `Memory` | `light_accepted` | `True` once a person has continued after a stringing pause | none |
-| | `failures` | Checked pictures in a row with no answer | count |
-| | `pause_reason` | `stringing`, `failures` or empty: why the tab last paused | none |
-| `Decision` | `action` | `pause` or `none` | none |
-| | `row` | The Part 1 row that decided it | none |
+| Type       | Field            | What it holds                                              | Unit  |
+| ---------- | ---------------- | ---------------------------------------------------------- | ----- |
+| `Picture`  | `file`           | The picture's file name, such as `p013_t0181.jpg`          | none  |
+|            | `seconds`        | Seconds since Print when it was taken                      | s     |
+|            | `layer`          | The layer from `pictures.csv`; empty before layer 1        | none  |
+| `Answer`   | `label`          | `none`, `light` or `heavy`                                 | none  |
+|            | `confidence`     | How sure the detector is, from 0 to 1                      | none  |
+| `Memory`   | `light_accepted` | `True` once a person has continued after a stringing pause | none  |
+|            | `failures`       | Checked pictures in a row with no answer                   | count |
+|            | `pause_reason`   | `stringing`, `failures` or empty: why the tab last paused  | none  |
+| `Decision` | `action`         | `pause` or `none`                                          | none  |
+|            | `row`            | The Part 1 row that decided it                             | none  |
 
 `Answer` is `None` for a picture the detector gave no answer for: `ask_vision` raised `VisionError`, or its `label` came back empty.
 

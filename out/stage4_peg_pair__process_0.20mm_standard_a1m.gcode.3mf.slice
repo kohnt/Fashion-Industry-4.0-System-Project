@@ -1,0 +1,11 @@
+{
+  "job": "stage4_peg_pair__process_0.20mm_standard_a1m.gcode.3mf",
+  "gcode": "stage4_peg_pair__process_0.20mm_standard_a1m.gcode",
+  "part": "stage4_peg_pair.stl",
+  "machine": "machine_a1mini_0.4.json",
+  "process": "process_0.20mm_standard_a1m.json",
+  "filament": "filament_bambu_pla_basic_a1m.json",
+  "sliced_at": "2026-10-03T21:14:12",
+  "slicer": "OrcaSlicer",
+  "fingerprint": "3bb338efecb3a4c912df7898160dabacd0470b42814e0fa719105083daf492ca"
+}
