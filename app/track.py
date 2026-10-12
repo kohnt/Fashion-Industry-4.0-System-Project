@@ -266,6 +266,22 @@ def passport(part_number: str) -> dict | None:
     }
 
 
+_STATUS_EVENTS = ("Print pressed", "Print finished", "Print failed", "Print data archived",
+                  "Fitted ", "Rejected:", "Accepted for production run")
+
+
+def full_record(part_number: str) -> dict | None:
+    """The whole record behind a passport, for the QC manager to check a line they doubt.
+    Each event also carries its station key and whether it is one that sets `status`."""
+    rec = load_record(part_number.strip())
+    if rec is None:
+        return None
+    keys = {v: k for k, v in STATIONS.items()}
+    events = [{**e, "key": keys.get(e["station"], ""), "sets_status": e["what"].startswith(_STATUS_EVENTS)}
+              for e in rec["events"]]
+    return {**rec, "events": events}
+
+
 def decide(part_number: str, decision: str, reason: str = "") -> dict:
     """passport.md rule 4: the QC decision is one more event on the record."""
     if decision == "accept":

@@ -23,6 +23,8 @@ Each row says what the printer does in one situation, and why. A label is one of
 
 In the replay, nobody presses continue on a screen. The simulator resumes by itself 30 seconds after a pause, in place of the person.
 
+**2026-10-12:** 13. A print sent from the Print tab reaches layer 1 → the tab starts watching it live: a webcam picture every 15 seconds goes to the detector, and rows 1 to 8 apply to each picture as in the replay → Stringing on a real print is caught without anyone watching the page.
+
 ## Part 2: How it is built
 
 Each rule names the Part 1 row it carries out.
@@ -34,6 +36,8 @@ Each rule names the Part 1 row it carries out.
 **Out.** On the page: one line for each picture the tab handled, and the printer's state. On disk: one log, `out/stage3_stringing_test_automate_log.csv`, with one line for each picture that arrived. The only command the tab ever sends to the printer is `pause()`.
 
 The tab does not slice, does not print, does not resume and does not stop. It does not change `scaffold/vision.py`, `scaffold/printer.py` or the saved answers. In the replay it calls no API.
+
+**2026-10-12:** For the live watch (row 13): **In**, the webcam `WEBCAM_INDEX` in `.env` (turned 180° when `WEBCAM_FLIP=1`) and the printer's reports for a Print-tab print. **Out**, the pictures in `out/<job stem>_frames/` and the log `out/<job stem>_automate_log.csv`, the names `contracts/tracking.md` rule 4 archives. The live watch calls `ask_vision` once for each checked picture. `AUTOMATE_LIVE=0` in `.env` switches it off.
 
 ### Function and data types
 
@@ -95,6 +99,16 @@ def decide(answer: Answer | None, memory: Memory) -> Decision
 
 12. **Waiting banner.** (Row 3.) While the printer is `PAUSE` and the tab pressed that Pause, the Automate tab shows one line: "Paused by Automate" and the reason (stringing, or no answer for 3 pictures), then "Waiting for a person to continue or stop". On the simulator it adds that the simulator resumes by itself after 30 seconds, in place of the person. The line has no button: the tab does not resume or stop (rule 7). It disappears when the printer is `RUNNING` again. A pause the tab did not press shows no such line. So a person looking at the page can see why the printer is paused and who decides next.
 
+**2026-10-12:** 13. **Live watch starts.** (Row 13.) The live watch starts once for each Print-tab press, on the first report of this job (telemetry.md rule 4) with state `RUNNING` and layer 1 or more. It does not start during a replay, and a replay cannot start while it runs. It starts with a fresh `Memory` (rule 4, new run).
+
+**2026-10-12:** 14. **Live answers.** (Rows 1, 6 and 13.) In the live watch, the answer for a checked picture comes from `ask_vision` on that picture, not from the saved answers. If `ask_vision` raises, or its label is not `none`, `light` or `heavy`, the picture has no answer and counts toward `failures` (rule 6). A dropped picture (rule 5) is saved but not sent, so it costs nothing.
+
+**2026-10-12:** 15. **Live pictures.** (Row 13.) A picture is taken every 15 seconds and saved as `p<n>_t<seconds since Print>.jpg` in `out/<job stem>_frames/`, numbered after any pictures already there, so none is overwritten. Its layer is the layer of the newest report. If a picture takes longer than 15 seconds to check, the next one is taken at once, never two at a time.
+
+**2026-10-12:** 16. **Live watch ends.** (Rows 3 and 13.) The live watch ends when the printer reports `FINISH`, `FAILED` or `IDLE`, when Print is pressed again, or when "Stop live watch" is pressed. Ending it sends no command. The Track tab's archive (tracking.md rule 4) waits for it to end, so the last picture and log line are archived.
+
+**2026-10-12:** 17. **No picture.** (Row 6.) If the webcam gives no picture, nothing reaches `on_picture` and `failures` does not change. The tab shows the error, and after three in a row says to check the webcam.
+
 ### The decisions
 
 **Rule 3** uses one comparison for both stages of Part 1 because row 5 says one threshold. The `light` pictures before the first pause and after it differ only in whether `light_accepted` is `True`.
@@ -110,6 +124,10 @@ def decide(answer: Answer | None, memory: Memory) -> Decision
 **Rule 11** exists because the page connects by itself every time it is opened, and Connect closes the printer it had and creates a new one. During a replay the replay holds the old simulator, whose state then stops changing, so every later picture reads as paused and is dropped; the log looks valid and is not.
 
 **The live check** uses one picture because one call is enough to show that the connection works, and each call costs money and waits at least 2 seconds after the last one.
+
+**2026-10-12:** **Rule 13** starts at layer 1, not at Print, because row 8 drops every picture before layer 1, so pictures before it would only cost disk space. It starts on its own, not from a button, so a person does not have to remember it for every print.
+
+**2026-10-12:** **Rule 17** does not count a missing picture as a failure, because row 6 is about the detector, and a webcam fault pausing the print would hide the real cause.
 
 ### How to check it
 
@@ -130,3 +148,5 @@ def decide(answer: Answer | None, memory: Memory) -> Decision
 **Connect during a replay.** Start a replay, then open the page in a second tab and press Connect on the Print tab. The Print tab says that a replay is running, the replay's table keeps filling, and the Monitor tab still shows the replay's printer.
 
 **The viva.** The TA asks: when the printer is paused and a picture arrives, why is it dropped and not checked later, and which row says so?
+
+**2026-10-12:** **The live watch.** With `PRINTER_SIM=1`, a short job and the detector replaced by one that alternates `none` 0.90 and `light` 0.70: the first picture is taken at layer 1 or more, the first `light` pauses (row 1), the pictures during the pause are `dropped` (row 2), and after the resume `light` is `checked` (row 4). The log and pictures are in `out/<job stem>_automate_log.csv` and `out/<job stem>_frames/`, and the archive holds them. On the real printer: send a print from the Print tab and watch the Automate tab's table fill from layer 1.

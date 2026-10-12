@@ -162,6 +162,7 @@ def _on_printer_report(report: dict) -> None:
 
     if layer_cell == 1 and _layer1_t is None:
         _layer1_t = elapsed
+    _live_maybe_start(layer_cell, state)   # automate.md 2026-10-12 rule 13
 
     row = [str(elapsed), state_cell, _fmt1(report.get("nozzle_temper")), _fmt1(report.get("bed_temper")),
            "" if layer_cell is None else str(layer_cell), "" if percent_cell is None else str(percent_cell)]
@@ -199,8 +200,11 @@ def _start_archive(final_state: str) -> None:
     job, press_t, numbers = _track_press
     _track_press = None
     log_path = _log_path
+    live = _live["thread"] if _live["press"] == press_t else None
 
     def run():
+        if live is not None:
+            live.join(timeout=90)   # the last picture and log line are written before archiving
         try:
             folder = track.archive_print(job, press_t, final_state, log_path, numbers)
             print(f"$ archived {job.name} in {folder.relative_to(ROOT)}")
@@ -447,6 +451,11 @@ FAILURES_TO_PAUSE = 3       # row 6
 PICTURE_EVERY = 15.0        # rule 9: seconds between pictures, as in pictures.csv
 REPLAY_JOB_SECONDS = 900.0  # rule 9: the simulator's job lasts past the last picture
 SLOW_RESUME_AFTER = 30.0    # the simulator resumes by itself this long after a pause, in slow mode
+# Live watch (automate.md, 2026-10-12 rules 13 to 17): the webcam watches a real Print-tab print.
+LIVE_WATCH = os.environ.get("AUTOMATE_LIVE", "1").strip() != "0"
+WEBCAM_INDEX = int(os.environ.get("WEBCAM_INDEX", "0").strip() or 0)
+WEBCAM_FLIP = os.environ.get("WEBCAM_FLIP", "0").strip() == "1"
+LIVE_ENDS = ("FINISH", "FAILED", "IDLE")   # rule 16: the watch ends with the job
 
 
 @dataclass
@@ -476,8 +485,12 @@ class Decision:
 
 
 _auto = {"running": False, "stop": False, "lines": [], "memory": Memory(), "answers": {},
-         "message": "", "error": "", "position": 0, "total": 0}
+         "message": "", "error": "", "position": 0, "total": 0,
+         "ask": lambda pic: None,   # Picture -> Answer | None: saved answers (replay) or the detector (live)
+         "log": AUTOMATE_LOG}
 _auto_lock = threading.Lock()
+# The live watch of one Print-tab print: the press it belongs to, its thread, and a stop flag.
+_live = {"press": 0.0, "thread": None, "stop": False, "active": False, "job": ""}
 
 
 def decide(answer: Answer | None, memory: Memory) -> Decision:
@@ -528,7 +541,7 @@ def _auto_log(pic: Picture, label: str, conf: str, state: str, action: str, row:
     line = [pic.file, "" if pic.layer is None else pic.layer, label, conf, state, action, row]
     with _auto_lock:
         _auto["lines"].append(line)
-        with open(AUTOMATE_LOG, "a", encoding="utf-8", newline="") as f:
+        with open(_auto["log"], "a", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(line)
 
 
@@ -564,7 +577,7 @@ def on_picture(picture: Picture, printer_state: str) -> Decision:
     if printer_state != "RUNNING":
         _auto_log(picture, "", "", printer_state, "dropped", 2)           # row 2
         return Decision("none", 2)
-    answer = _auto["answers"].get(picture.file)
+    answer = _auto["ask"](picture)
     decision = decide(answer, _auto["memory"])
     label = answer.label if answer else ""
     conf = f"{answer.confidence:.2f}" if answer else ""
@@ -591,8 +604,9 @@ def _replay(job_rel: str, answers_path: Path) -> None:
     global _printer, _press_state, _press_t0, _press_job, _last_stop_was_us, _pause_from_page_t, _seen_pause
     try:
         pics = _read_used(DATASET_FRAMES)
-        _auto.update(answers=_read_answers(answers_path), memory=Memory(), lines=[], message="", error="",
-                     position=0, total=len(pics))
+        answers = _read_answers(answers_path)
+        _auto.update(answers=answers, ask=lambda pic: answers.get(pic.file), log=AUTOMATE_LOG,
+                     memory=Memory(), lines=[], message="", error="", position=0, total=len(pics))
         with open(AUTOMATE_LOG, "w", encoding="utf-8", newline="") as f:
             csv.writer(f).writerow(AUTOMATE_COLUMNS)
 
@@ -653,6 +667,111 @@ def _replay(job_rel: str, answers_path: Path) -> None:
         _auto["running"] = False
 
 
+# ----------------------------------------------------------------------
+# Live watch (automate.md, 2026-10-12 rules 13 to 17). From layer 1 of a
+# Print-tab print, the webcam takes a picture every 15 s into
+# out/<job stem>_frames/, the detector is asked about it, and on_picture
+# applies the same rules as the replay. The only printer command is pause().
+# ----------------------------------------------------------------------
+def _job_stem(job_name: str) -> str:
+    return job_name[:-len(".gcode.3mf")] if job_name.endswith(".gcode.3mf") else Path(job_name).stem
+
+
+def _live_maybe_start(layer: int | None, state: str | None) -> None:
+    """Rule 13: start the watch once, on the first report of layer 1 or more while RUNNING."""
+    if not LIVE_WATCH or _auto["running"] or _live["active"] or _live["press"] == _press_t0:
+        return
+    if state != "RUNNING" or layer is None or layer < 1:
+        return
+    _live.update(press=_press_t0, stop=False, active=True, job=_press_job)
+    _live["thread"] = threading.Thread(target=_live_watch, args=(_press_t0, _press_job), daemon=True)
+    _live["thread"].start()
+
+
+def _live_answer(folder: Path):
+    """Rule 14: ask the detector about one picture; any failure is no answer (row 6)."""
+    def ask(pic: Picture) -> Answer | None:
+        try:
+            a = ask_vision(folder / pic.file)
+        except Exception as exc:   # VisionError, or a reply in an unexpected shape
+            _auto["message"] = f"No answer for {pic.file}: {exc}"
+            return None
+        if a.get("stringing") not in LEVELS:
+            return None
+        return Answer(a["stringing"], float(a.get("confidence") or 0))
+    return ask
+
+
+def _live_state() -> str:
+    p = _printer
+    try:
+        return p.state() if p is not None else "UNKNOWN"
+    except Exception:
+        return "UNKNOWN"
+
+
+def _live_layer() -> int | None:
+    """The layer of the newest report, once it belongs to this job (telemetry.md rule 4)."""
+    layer = _latest_report.get("layer_num")
+    return layer if (_layer_zero_seen and isinstance(layer, int)) else None
+
+
+def _live_watch(press_t: float, job_name: str) -> None:
+    stem = _job_stem(job_name)
+    folder = OUT_DIR / f"{stem}_frames"
+    folder.mkdir(exist_ok=True)
+    log = OUT_DIR / f"{stem}_automate_log.csv"
+    with open(log, "w", encoding="utf-8", newline="") as f:
+        csv.writer(f).writerow(AUTOMATE_COLUMNS)
+    # Rule 15: number after any pictures already in the folder, so none is overwritten.
+    taken = [int(p.stem[1:4]) for p in folder.glob("p[0-9][0-9][0-9]_t*.jpg")]
+    n = max(taken, default=0)
+    with _auto_lock:
+        _auto.update(ask=_live_answer(folder), log=log, memory=Memory(), lines=[], error="",
+                     message=f"Live watch of {job_name}: webcam {WEBCAM_INDEX}, one picture every {PICTURE_EVERY:.0f} s.",
+                     position=0, total=0)
+    cap = None
+    try:
+        try:
+            from scaffold.capture import _grab, _open_camera, _settle
+            cv2, cap = _open_camera(WEBCAM_INDEX)
+        except SystemExit as exc:   # capture.py reports a missing OpenCV or camera this way
+            raise RuntimeError(str(exc)) from None
+        _settle(cap, 3.0)
+        prev, due, failed = _live_state(), time.time(), 0
+        while True:
+            # Wait for the next slot, following the state for rule 4 (a person continued).
+            while not _live["stop"] and _press_t0 == press_t and time.time() < due:
+                prev = _auto_track(prev, _live_state())
+                time.sleep(0.2)
+            now = _live_state()
+            prev = _auto_track(prev, now)
+            if _live["stop"] or _press_t0 != press_t or now in LIVE_ENDS:   # rule 16
+                break
+            due = max(due + PICTURE_EVERY, time.time())
+            seconds = time.time() - press_t
+            name = f"p{n + 1:03d}_t{seconds:04.0f}.jpg"
+            try:
+                _settle(cap, 0.5)
+                cv2.imwrite(str(folder / name), _grab(cv2, cap, WEBCAM_FLIP), [cv2.IMWRITE_JPEG_QUALITY, 95])
+                failed = 0
+            except Exception as exc:   # no picture arrived, so nothing for on_picture (rule 17)
+                failed += 1
+                _auto["message"] = f"The webcam gave no picture ({exc})." + \
+                    (" Three in a row: check the cable and WEBCAM_INDEX in .env." if failed >= 3 else "")
+                continue
+            n += 1
+            on_picture(Picture(name, round(seconds, 1), _live_layer()), now)
+            _auto["position"] += 1
+        _auto["message"] = "Live watch stopped." if _live["stop"] else f"Live watch ended ({_live_state()})."
+    except Exception as exc:
+        _auto["error"] = f"Live watch: {type(exc).__name__}: {exc}"
+    finally:
+        if cap is not None:
+            cap.release()
+        _live["active"] = False
+
+
 def _within_root(rel: str) -> Path | None:
     path = (ROOT / rel).resolve()
     return path if path.is_file() and path.is_relative_to(ROOT.resolve()) else None
@@ -679,6 +798,14 @@ def _automate_section() -> str:
     picture_options = "".join(f'<option value="{html.escape(f)}">{html.escape(f)}</option>' for f in pictures) \
         or '<option value="">(dataset folder not found)</option>'
     page = """
+    <div class="card">
+      <b>Live watch</b>
+      <div class="muted" style="flex-basis:100%">For a print sent from the Print tab: from layer 1 the webcam takes a picture every 15 s
+        into out/&lt;job&gt;_frames/ and asks the detector about it (one API call each), and the tab pauses on stringing by the same rules.
+        It ends with the print. Set in .env: WEBCAM_INDEX, WEBCAM_FLIP=1 for an upside-down webcam, AUTOMATE_LIVE=0 to switch it off.</div>
+      <div id="live-state" style="flex-basis:100%" class="muted"></div>
+      <button id="live-stop" onclick="liveStop()" style="background:#666" disabled>Stop live watch</button>
+    </div>
     <div class="card">
       <b>Replay</b>
       <div class="muted" style="flex-basis:100%">Plays the saved answers back in order, 15 s apart, on the simulator in slow mode.
@@ -714,6 +841,7 @@ def _automate_section() -> str:
                      document.querySelector('#auto-error pre').textContent = d.error; }
     }
     async function autoStop() { await fetch('/automate/replay/stop'); }
+    async function liveStop() { await fetch('/automate/watch/stop'); }
     async function autoLive() {
       const box = document.getElementById('auto-live');
       box.textContent = 'Asking the detector...';
@@ -729,15 +857,20 @@ def _automate_section() -> str:
     async function pollAutomate() {
       try {
         const d = await (await fetch('/automate/status')).json();
-        document.getElementById('auto-start').disabled = d.running;
+        const live = d.live;
+        document.getElementById('auto-start').disabled = d.running || live.active;
         document.getElementById('auto-stop').disabled = !d.running;
+        document.getElementById('live-stop').disabled = !live.active;
+        document.getElementById('live-state').textContent = !live.on ? 'Off (AUTOMATE_LIVE=0 in .env).'
+          : live.active ? 'Watching ' + live.job + ' with webcam ' + live.webcam + (live.flip ? ' (flipped)' : '') + '.'
+          : 'Waiting for layer 1 of the next Print-tab print (webcam ' + live.webcam + (live.flip ? ', flipped' : '') + ').';
         const mem = d.memory;
         const wait = document.getElementById('auto-wait');
         wait.style.display = d.waiting ? 'block' : 'none';
         wait.textContent = d.waiting || '';
         document.getElementById('auto-status').innerHTML = '<div class="results">'
-          + '<div><b>' + (d.running ? 'running' : 'idle') + '</b><div class="muted">replay</div></div>'
-          + '<div>' + d.position + ' of ' + d.total + '<div class="muted">pictures handled</div></div>'
+          + '<div><b>' + (d.running ? 'replay running' : live.active ? 'live watch' : 'idle') + '</b><div class="muted">Automate</div></div>'
+          + '<div>' + d.position + (d.total ? ' of ' + d.total : '') + '<div class="muted">pictures handled</div></div>'
           + '<div>' + (mem.light_accepted ? 'accepted' : 'not accepted') + '<div class="muted">light stringing</div></div>'
           + '<div>' + mem.failures + '<div class="muted">failures in a row</div></div>'
           + '<div class="muted"></div></div>';
@@ -878,6 +1011,16 @@ def _passport_section() -> str:
       </div>
     </div>
     <div id="pp-card"></div>
+    <div id="pp-shade" onclick="ppCloseRecord()"></div>
+    <aside id="pp-drawer" aria-hidden="true" aria-label="Full record">
+      <div class="pp-drawer-head">
+        <b id="pp-drawer-title">Full record</b>
+        <button class="pp-x" onclick="ppCloseRecord()" title="Close (Esc)">&times;</button>
+      </div>
+      <div id="pp-drawer-meta" class="muted"></div>
+      <div id="pp-drawer-filter" class="pp-chips"></div>
+      <div id="pp-drawer-body"></div>
+    </aside>
     <style>
       .pp { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); margin-bottom: 1.2em; }
       .pp h2 { background: var(--red); color: white; margin: 0; padding: 0.7em 1em; font-size: 1.15em; }
@@ -887,11 +1030,36 @@ def _passport_section() -> str:
       .pp .actions { padding: 1em; display: flex; gap: 0.8em; flex-wrap: wrap; align-items: center; }
       .pp button.ok { background: #2a7a2a; }
       .pp button:disabled { background: #aaa; cursor: default; }
+      .pp h2 { display: flex; justify-content: space-between; align-items: center; gap: 1em; }
+      .pp h2 button { background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.5); padding: 0.3em 0.9em; font-size: 0.8em; }
+      .pp a.more { float: right; font-size: 0.82em; color: var(--muted); text-decoration: none; margin-left: 1em; }
+      .pp a.more:hover { color: var(--red); text-decoration: underline; }
+      #pp-shade { position: fixed; inset: 0; background: rgba(0,0,0,0.25); opacity: 0; pointer-events: none; transition: opacity 0.2s; z-index: 20; }
+      #pp-shade.open { opacity: 1; pointer-events: auto; }
+      #pp-drawer { position: fixed; top: 0; right: 0; height: 100vh; width: min(480px, 100vw); background: var(--card);
+                   border-left: 1px solid var(--border); box-shadow: -4px 0 16px rgba(0,0,0,0.12); z-index: 21;
+                   transform: translateX(100%); transition: transform 0.22s ease-out; display: flex; flex-direction: column; }
+      #pp-drawer.open { transform: translateX(0); }
+      .pp-drawer-head { display: flex; justify-content: space-between; align-items: center; padding: 1em 1.2em 0.4em; }
+      .pp-drawer-head b { color: var(--red); font-size: 1.1em; }
+      .pp-x { background: none; color: var(--muted); font-size: 1.6em; padding: 0 0.3em; line-height: 1; }
+      #pp-drawer-meta { padding: 0 1.2em 0.6em; line-height: 1.6; word-break: break-all; }
+      .pp-chips { display: flex; gap: 0.4em; flex-wrap: wrap; padding: 0 1.2em 0.8em; border-bottom: 1px solid var(--border); }
+      .pp-chips button { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 0.25em 0.8em; font-size: 0.82em; border-radius: 999px; }
+      .pp-chips button.on { background: var(--red); color: white; border-color: var(--red); }
+      #pp-drawer-body { overflow-y: auto; padding: 0.4em 0 2em; flex: 1; }
+      .pp-ev { padding: 0.6em 1.2em; border-left: 3px solid transparent; }
+      .pp-ev + .pp-ev { border-top: 1px solid var(--border); }
+      .pp-ev .when { font-size: 0.8em; color: var(--muted); }
+      .pp-ev .where { font-size: 0.8em; font-weight: 600; color: var(--muted); }
+      .pp-ev.hit { background: #fff8e6; border-left-color: #c98a00; }
+      .pp-ev.dim { opacity: 0.45; }
     </style>
     <script>
     let ppShown = '';
     async function openPassport(pn) {
-      pn = (pn || '').trim(); ppShown = pn; document.getElementById('pp-part').value = pn;
+      pn = (pn || '').trim(); if (pn !== ppShown) ppCloseRecord();
+      ppShown = pn; document.getElementById('pp-part').value = pn;
       const box = document.getElementById('pp-card');
       const d = await (await fetch('/passport/data?part=' + encodeURIComponent(pn))).json();
       if (d.error) { box.innerHTML = '<div class="card">' + esc(d.error) + '</div>'; return; }
@@ -900,12 +1068,15 @@ def _passport_section() -> str:
       const data = d.print_folder ? (d.print_data.map(f => '<a href="/' + esc(encodeURI(f)) + '" target="_blank">' +
           esc(f.split('/').slice(2).join('/') || f) + '</a>').join('<br>') || 'Folder is empty') : 'Not archived';
       const dis = d.can_decide ? '' : ' disabled';
-      box.innerHTML = '<div class="pp"><h2>Passport: ' + esc(d.part_number) + ' (' + esc(d.identifier) + ')</h2><table>' +
-        '<tr><td>Print</td><td>' + esc(d.print) + '</td></tr>' +
+      // Each summary line can open the full record with the events behind it marked.
+      const more = line => '<a href="#" class="more" onclick="ppOpenRecord(\\'' + line + '\\'); return false">details &rsaquo;</a>';
+      box.innerHTML = '<div class="pp"><h2><span>Passport: ' + esc(d.part_number) + ' (' + esc(d.identifier) + ')</span>' +
+        '<button onclick="ppOpenRecord(\\'all\\')">Full record &rsaquo;</button></h2><table>' +
+        '<tr><td>Print</td><td>' + more('print') + esc(d.print) + '</td></tr>' +
         '<tr><td>Job</td><td>' + esc(d.job) + '</td></tr>' +
-        '<tr><td>Inspection</td><td>' + esc(d.inspection) + '</td></tr>' +
-        '<tr><td>Assembly</td><td>' + asm + '</td></tr>' +
-        '<tr><td>Status</td><td><b>' + esc(d.status) + '</b></td></tr>' +
+        '<tr><td>Inspection</td><td>' + more('inspection') + esc(d.inspection) + '</td></tr>' +
+        '<tr><td>Assembly</td><td>' + more('assembly') + asm + '</td></tr>' +
+        '<tr><td>Status</td><td>' + more('status') + '<b>' + esc(d.status) + '</b></td></tr>' +
         '<tr><td>Print data</td><td>' + data + '</td></tr></table>' +
         '<div class="actions"><button class="ok" onclick="ppDecide(\\'accept\\')"' + dis + '>Accept for production run</button>' +
         '<input id="pp-reason" type="text" style="padding:0.4em; flex:1" placeholder="reason for rejecting"' + dis + '>' +
@@ -917,8 +1088,52 @@ def _passport_section() -> str:
       const d = await (await fetch('/passport/decide?part=' + encodeURIComponent(ppShown) + '&decision=' + decision +
                                    '&reason=' + encodeURIComponent(reason))).json();
       if (d.error) { document.getElementById('pp-msg').textContent = 'Error: ' + d.error; return; }
-      openPassport(ppShown); pollTrack();
+      await openPassport(ppShown); pollTrack();
+      if (document.getElementById('pp-drawer').classList.contains('open')) ppOpenRecord(ppFocus);
     }
+
+    // The full record, in a side drawer: every event, oldest first, read from the record
+    // itself (/passport/record), so the QC manager can check any line of the summary.
+    const PP_LINES = {
+      all: {name: 'All', test: e => true},
+      print: {name: 'Print', test: e => ['print', 'printer', 'automate', 'track'].includes(e.key)},
+      inspection: {name: 'Inspection', test: e => e.key === 'inspection'},
+      assembly: {name: 'Assembly', test: e => e.key === 'assembly'},
+      status: {name: 'Status', test: e => e.sets_status},
+    };
+    let ppFocus = 'all';
+    async function ppOpenRecord(line) {
+      ppFocus = line || 'all';
+      const r = await (await fetch('/passport/record?part=' + encodeURIComponent(ppShown))).json();
+      const drawer = document.getElementById('pp-drawer');
+      if (r.error) { document.getElementById('pp-drawer-body').innerHTML = '<div class="pp-ev">' + esc(r.error) + '</div>'; }
+      else {
+        document.getElementById('pp-drawer-title').textContent = 'Full record: ' + r.part_number;
+        document.getElementById('pp-drawer-meta').innerHTML =
+          'Fingerprint ' + esc(r.fingerprint) + '<br>Job ' + esc(r.job) + '<br>Part ' + esc(r.part) +
+          '<br>Archive ' + (r.print_folder ? esc(r.print_folder) : 'not archived') +
+          '<br>' + r.events.length + ' events &middot; <a href="/out/records/' + encodeURIComponent(r.part_number) +
+          '.json" target="_blank">raw record (JSON)</a>';
+        document.getElementById('pp-drawer-filter').innerHTML = Object.entries(PP_LINES).map(([k, v]) =>
+          '<button class="' + (k === ppFocus ? 'on' : '') + '" onclick="ppOpenRecord(\\'' + k + '\\')">' + v.name +
+          ' (' + r.events.filter(v.test).length + ')</button>').join('');
+        const test = PP_LINES[ppFocus].test, focused = ppFocus !== 'all';
+        document.getElementById('pp-drawer-body').innerHTML = r.events.map(e =>
+          '<div class="pp-ev' + (focused ? (test(e) ? ' hit' : ' dim') : '') + '"><div class="when">' + esc(e.time) +
+          '</div><div class="where">' + esc(e.station) + '</div><div>' + esc(e.what) + '</div></div>').join('')
+          || '<div class="pp-ev muted">No events.</div>';
+        const first = document.querySelector('#pp-drawer-body .hit');
+        if (first) first.scrollIntoView({block: 'center'});
+      }
+      drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false');
+      document.getElementById('pp-shade').classList.add('open');
+    }
+    function ppCloseRecord() {
+      document.getElementById('pp-drawer').classList.remove('open');
+      document.getElementById('pp-drawer').setAttribute('aria-hidden', 'true');
+      document.getElementById('pp-shade').classList.remove('open');
+    }
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') ppCloseRecord(); });
     </script>
     """
 
@@ -1096,6 +1311,11 @@ class Handler(BaseHTTPRequestHandler):
                 if card is None:
                     raise ValueError(f"No record for {q.get('part', '').strip()}")
                 self._send_json(card)
+            elif path == "/passport/record":
+                rec = track.full_record(q.get("part", ""))
+                if rec is None:
+                    raise ValueError(f"No record for {q.get('part', '').strip()}")
+                self._send_json(rec)
             elif path == "/passport/decide":
                 track.decide(q.get("part", ""), q.get("decision", ""), q.get("reason", ""))
                 self._send_json({"ok": True})
@@ -1266,6 +1486,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if _auto["running"]:
                     raise RuntimeError("A replay is already running.")
+                if _live["active"]:
+                    raise RuntimeError("A live watch of a real print is running. Stop it first.")
                 job_rel = qs.get("job", [""])[0]
                 if not job_rel:
                     raise RuntimeError("No job for the simulator. Slice a part on the Slice tab first.")
@@ -1286,6 +1508,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
 
+        if parsed.path == "/automate/watch/stop":
+            _live["stop"] = True   # rule 16: stops taking pictures only; it sends nothing to the printer
+            self._send_json({"ok": True})
+            return
+
         if parsed.path == "/automate/status":
             with _auto_lock:
                 lines = list(_auto["lines"])
@@ -1298,6 +1525,8 @@ class Handler(BaseHTTPRequestHandler):
                 if _auto["running"]:
                     waiting += " On the simulator it resumes by itself after 30 s, in place of the person."
             self._send_json({"waiting": waiting, "running": _auto["running"], "message": _auto["message"], "error": _auto["error"],
+                             "live": {"on": LIVE_WATCH, "active": _live["active"], "job": _live["job"],
+                                      "webcam": WEBCAM_INDEX, "flip": WEBCAM_FLIP},
                              "position": _auto["position"], "total": _auto["total"], "lines": lines,
                              "memory": {"light_accepted": m.light_accepted, "failures": m.failures}})
             return

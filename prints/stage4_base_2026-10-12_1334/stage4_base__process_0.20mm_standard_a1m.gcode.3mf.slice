@@ -1,0 +1,11 @@
+{
+  "job": "stage4_base__process_0.20mm_standard_a1m.gcode.3mf",
+  "gcode": "stage4_base__process_0.20mm_standard_a1m.gcode",
+  "part": "stage4_base.stl",
+  "machine": "machine_a1mini_0.4.json",
+  "process": "process_0.20mm_standard_a1m.json",
+  "filament": "filament_bambu_pla_basic_a1m.json",
+  "sliced_at": "2026-10-12T13:33:23",
+  "slicer": "com.orcaslicer.OrcaSlicer",
+  "fingerprint": "d01edd014043eb2eca6970ede07efe92d5c0664f1d515b56b8301a9369321692"
+}

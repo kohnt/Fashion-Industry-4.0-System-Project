@@ -5,7 +5,7 @@
   "machine": "machine_a1mini_0.4.json",
   "process": "process_0.20mm_standard_a1m.json",
   "filament": "filament_bambu_pla_basic_a1m.json",
-  "sliced_at": "2026-10-11T14:42:09",
+  "sliced_at": "2026-10-12T13:33:23",
   "slicer": "com.orcaslicer.OrcaSlicer",
-  "fingerprint": "9a8bf6fd068f1ed497726a7c3dbe6271e21ba4cb7830c6047c54b3107029b68a"
+  "fingerprint": "d01edd014043eb2eca6970ede07efe92d5c0664f1d515b56b8301a9369321692"
 }

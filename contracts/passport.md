@@ -47,11 +47,15 @@ def passport(part_number: str) -> dict
 
 6. **Print data links.** Each archived file is one link, served from `prints/` only. If `print_folder` is empty, the line says `Not archived` and there are no links.
 
+**2026-10-11:** 7. **Full record on request.** The card has a **Full record** button, and the Print, Inspection, Assembly and Status lines each have a **details** link. Each opens a side panel over the page with every event of the record, oldest first, with its time, station and what, and a link to the record's JSON file. A details link marks the events behind that line (Print: the Print tab, printer, Automate and Track tab stations; Inspection and Assembly: that station; Status: the events that set `status`) and fades the rest. The panel only reads: it adds nothing to the record. It closes with its close button, Esc or a click beside it, and opening another part closes it. So the card stays one screen (rule 2), and the QC manager can still check any line they doubt.
+
 ## The decisions
 
 **The stakeholder** is a brand's QC manager, chosen over the boutique buyer and the end customer. The QC manager is the person who decides whether a part enters the production run, and that decision needs the print and inspection evidence.
 
 **Rule 2** hides the raw data because the QC manager decides from a summary: did the print run cleanly, was the part measured, what is it fitted to. The record holds every event for anyone who needs to check the summary.
+
+**2026-10-11:** rule 7 keeps rule 2's summary and puts the evidence one click away, in a panel the QC manager opens only for a line they doubt. Chosen over a list of events under the card, which would push the decision buttons off the screen, and over sending them to the Track tab, which is the shop floor's page, not theirs.
 
 **Rule 4** adds the decision as an event, chosen over a separate decisions file, so the record of each part holds its whole history from Print to the QC decision.
 
@@ -65,3 +69,5 @@ After the Track tab checks in `contracts/tracking.md`, before running, write dow
 - **Reject a part without a reason.** Nothing is added.
 
 The viva. The TA asks: your record holds every event, so why does your passport leave most of them out, and how would the QC manager check a line they doubt?
+
+**2026-10-11:** Open `3bb338ef-01` and press its Inspection line's **details**. The side panel lists every event of `out/records/3bb338ef-01.json`, the inspection events are marked, and the count beside **All** equals the number of events in the file. Press Accept with the panel open: the panel then ends with the acceptance at `Brand QC (passport)`. Press Esc: the panel closes and the card is unchanged.
