@@ -922,7 +922,7 @@ def _track_section() -> str:
     <div class="card">
       <b>Fit an assembly</b> <span class="muted">(rule 7: the holder, such as the cap, and the parts it holds)</span>
       <div class="results" style="margin-top:0.6em">
-        <div class="field"><label>Holder</label><select id="fit-holder" class="track-parts"></select></div>
+        <div class="field"><label>Holder</label><select id="fit-holder" class="track-parts" onchange="pollTrack()"></select></div>
         <div class="field"><label>Parts it holds</label><div id="fit-parts"></div></div>
         <button onclick="trackFit()">Fit</button>
       </div>
@@ -987,7 +987,8 @@ def _track_section() -> str:
           if (open.some(r => r.part_number === keep)) sel.value = keep;
         });
         const box = document.getElementById('fit-parts'), ticked = new Set([...box.querySelectorAll('input:checked')].map(c => c.value));
-        box.innerHTML = open.filter(r => !r.fitted_in && !r.fitted_with.length).map(r => '<label style="display:block"><input type="checkbox" value="' +
+        const holder = document.getElementById('fit-holder').value;   // a part is never fitted to itself
+        box.innerHTML = open.filter(r => !r.fitted_in && !r.fitted_with.length && r.part_number !== holder).map(r => '<label style="display:block"><input type="checkbox" value="' +
           esc(r.part_number) + '"' + (ticked.has(r.part_number) ? ' checked' : '') + '> ' + esc(trackLabel(r)) + '</label>').join('') || '<span class="muted">none free</span>';
         if (trackShown) showEvents(trackShown);
         const dl = document.getElementById('passport-list');
@@ -998,6 +999,87 @@ def _track_section() -> str:
     setInterval(pollTrack, 4000);
     </script>
     """
+
+
+def _read_stl(data: bytes) -> list[float]:
+    """Triangles of an STL file (binary or ASCII), flat: x1 y1 z1 x2 y2 z2 x3 y3 z3 per triangle."""
+    import struct
+    n = struct.unpack_from("<I", data, 80)[0] if len(data) >= 84 else 0
+    if len(data) == 84 + 50 * n:
+        tris: list[float] = []
+        for i in range(n):
+            tris.extend(struct.unpack_from("<9f", data, 84 + 50 * i + 12))
+        return tris
+    return [float(w) for line in data.decode("utf-8", "replace").splitlines()
+            if line.strip().startswith("vertex") for w in line.split()[1:4]]
+
+
+def _job_summary(job: Path) -> tuple[list[list[str]], str]:
+    """Predicted time and filament from a .gcode.3mf's slice_info, and the filament colour."""
+    import xml.etree.ElementTree as ET
+    import zipfile
+    info, color = [], "#c8102e"
+    with zipfile.ZipFile(job) as z:
+        if "Metadata/slice_info.config" not in z.namelist():
+            return info, color
+        plate = ET.fromstring(z.read("Metadata/slice_info.config")).find("plate")
+    if plate is None:
+        return info, color
+    meta = {m.get("key"): m.get("value") for m in plate.findall("metadata")}
+    if meta.get("prediction"):
+        s = int(float(meta["prediction"]))
+        info.append(["Predicted time", f"{s // 3600} h {s % 3600 // 60} min" if s >= 3600 else f"{s // 60} min {s % 60} s"])
+    fil = plate.find("filament")
+    if fil is not None:
+        info.append(["Filament", f"{fil.get('type')} {fil.get('color')}, {fil.get('used_g')} g, {fil.get('used_m')} m"])
+        color = fil.get("color") or color
+    return info, color
+
+
+def _view_print_file(rel: str) -> dict:
+    """What the Passport tab's viewer draws for one archived file (passport.md rule 6: prints/ only).
+    Reads the file; changes nothing."""
+    import tempfile
+    import zipfile
+    path = (ROOT / rel).resolve()
+    if not path.is_relative_to(track.PRINTS_DIR.resolve()) or not path.is_file():
+        raise ValueError(f"No archived file {rel}")
+    name = path.name.lower()
+    if name.endswith((".png", ".jpg", ".jpeg")):
+        return {"kind": "image"}
+    if name.endswith(".stl"):
+        tris = _read_stl(path.read_bytes())
+        # Drawn in the filament colour of the job beside it, if the folder holds one.
+        job = next((j for j in path.parent.glob("*.gcode.3mf") if zipfile.is_zipfile(j)), None)
+        return {"kind": "mesh", "tris": [round(v, 3) for v in tris], "info": [["Triangles", str(len(tris) // 9)]],
+                "color": _job_summary(job)[1] if job else "#c8102e"}
+    if name.endswith(".csv"):
+        with path.open(newline="", encoding="utf-8", errors="replace") as f:
+            rows = list(csv.reader(f))
+        return {"kind": "table", "header": rows[0] if rows else [], "rows": rows[1:]}
+    if name.endswith(".3mf"):
+        if not zipfile.is_zipfile(path):
+            raise ValueError(f"{path.name} is not a readable job file")
+        info, color = _job_summary(path)
+        with zipfile.ZipFile(path) as z, tempfile.TemporaryDirectory() as tmp:
+            gcode_name = next((n for n in z.namelist() if n.endswith(".gcode")), None)
+            if gcode_name is None:
+                raise ValueError(f"{path.name} holds no G-code")
+            g = Path(tmp) / "plate.gcode"
+            g.write_bytes(z.read(gcode_name))
+            layers = parse_gcode(g)
+        # Extrusion moves only, flat: x0 y0 x1 y1 z layer-index per move.
+        segs = [v for i, layer in enumerate(layers) for m in layer.moves if m.extrude
+                for v in (round(m.x0, 2), round(m.y0, 2), round(m.x1, 2), round(m.y1, 2), round(layer.z, 3), i)]
+        info = [["Layers", str(len(layers))], ["Extrusion moves", str(len(segs) // 6)]] + info
+        return {"kind": "toolpath", "segs": segs, "info": info, "color": color}
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if name.endswith((".json", ".slice")):
+        try:
+            text = json.dumps(json.loads(text), indent=2)
+        except ValueError:
+            pass
+    return {"kind": "text", "text": text[:200_000]}
 
 
 def _passport_section() -> str:
@@ -1021,6 +1103,17 @@ def _passport_section() -> str:
       <div id="pp-drawer-filter" class="pp-chips"></div>
       <div id="pp-drawer-body"></div>
     </aside>
+    <div id="pv-shade" onclick="pvClose()"></div>
+    <div id="pv" role="dialog" aria-hidden="true" aria-label="Print data viewer">
+      <div class="pv-head">
+        <button class="pv-nav" onclick="ppView(pvIdx - 1)" title="Previous file (&larr;)">&lsaquo;</button>
+        <b id="pv-title"></b><span id="pv-pos" class="muted"></span>
+        <button class="pv-nav" onclick="ppView(pvIdx + 1)" title="Next file (&rarr;)">&rsaquo;</button>
+        <a id="pv-raw" href="#">Download</a>
+        <button class="pp-x" onclick="pvClose()" title="Close (Esc)">&times;</button>
+      </div>
+      <div id="pv-body"></div>
+    </div>
     <style>
       .pp { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; background: var(--card); margin-bottom: 1.2em; }
       .pp h2 { background: var(--red); color: white; margin: 0; padding: 0.7em 1em; font-size: 1.15em; }
@@ -1054,6 +1147,28 @@ def _passport_section() -> str:
       .pp-ev .where { font-size: 0.8em; font-weight: 600; color: var(--muted); }
       .pp-ev.hit { background: #fff8e6; border-left-color: #c98a00; }
       .pp-ev.dim { opacity: 0.45; }
+      #pv-shade { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; z-index: 30; }
+      #pv-shade.open { display: block; }
+      #pv { position: fixed; inset: 4vh 4vw; background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3); z-index: 31; display: none; flex-direction: column; overflow: hidden; }
+      #pv.open { display: flex; }
+      .pv-head { display: flex; align-items: center; gap: 0.6em; padding: 0.6em 0.8em; border-bottom: 1px solid var(--border); }
+      .pv-head b { color: var(--red); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+      .pv-head #pv-raw { margin-left: auto; font-size: 0.9em; }
+      .pv-nav { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 0.1em 0.6em; font-size: 1.2em; line-height: 1.2; }
+      #pv-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+      .pv-msg { padding: 2em; text-align: center; }
+      .pv-img { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #111; }
+      .pv-img img { max-width: 100%; max-height: 100%; object-fit: contain; }
+      .pv-text { flex: 1; margin: 0; padding: 1em; overflow: auto; font-size: 0.85em; }
+      .pv-table { flex: 1; overflow: auto; }
+      .pv-table table { width: 100%; border-collapse: collapse; }
+      .pv-table th { position: sticky; top: 0; background: var(--card); text-align: left; }
+      .pv-table th, .pv-table td { padding: 0.3em 0.7em; border-bottom: 1px solid var(--border); white-space: nowrap; }
+      .pv-info { display: flex; flex-wrap: wrap; gap: 0.4em 1.4em; padding: 0.6em 1em; font-size: 0.88em; border-bottom: 1px solid var(--border); align-items: center; }
+      .pv-layers { margin-left: auto; display: flex; align-items: center; gap: 0.5em; }
+      #pv-canvas { flex: 1; min-height: 0; width: 100%; cursor: grab; touch-action: none; background: var(--bg); }
+      #pv-canvas:active { cursor: grabbing; }
     </style>
     <script>
     let ppShown = '';
@@ -1065,8 +1180,9 @@ def _passport_section() -> str:
       if (d.error) { box.innerHTML = '<div class="card">' + esc(d.error) + '</div>'; return; }
       const asm = d.assembly.parts.length ? d.assembly.text + ' ' + d.assembly.parts.map(p =>
           '<a href="#" onclick="openPassport(\\'' + esc(p) + '\\'); return false">' + esc(p) + '</a>').join(', ') : esc(d.assembly.text);
-      const data = d.print_folder ? (d.print_data.map(f => '<a href="/' + esc(encodeURI(f)) + '" target="_blank">' +
-          esc(f.split('/').slice(2).join('/') || f) + '</a>').join('<br>') || 'Folder is empty') : 'Not archived';
+      ppFiles = d.print_data;   // clicking a file opens it in the viewer; the link itself still downloads it
+      const data = d.print_folder ? (d.print_data.map((f, i) => '<a href="/' + esc(encodeURI(f)) + '" target="_blank" onclick="ppView(' +
+          i + '); return false">' + esc(f.split('/').slice(2).join('/') || f) + '</a>').join('<br>') || 'Folder is empty') : 'Not archived';
       const dis = d.can_decide ? '' : ' disabled';
       // Each summary line can open the full record with the events behind it marked.
       const more = line => '<a href="#" class="more" onclick="ppOpenRecord(\\'' + line + '\\'); return false">details &rsaquo;</a>';
@@ -1133,7 +1249,157 @@ def _passport_section() -> str:
       document.getElementById('pp-drawer').setAttribute('aria-hidden', 'true');
       document.getElementById('pp-shade').classList.remove('open');
     }
-    document.addEventListener('keydown', e => { if (e.key === 'Escape') ppCloseRecord(); });
+    document.addEventListener('keydown', e => {
+      if (document.getElementById('pv').classList.contains('open')) {
+        if (e.key === 'Escape') pvClose();
+        else if (e.target.type !== 'range' && (e.key === 'ArrowLeft' || e.key === 'ArrowRight'))
+          ppView(pvIdx + (e.key === 'ArrowLeft' ? -1 : 1));
+      } else if (e.key === 'Escape') ppCloseRecord();
+    });
+
+    // The print-data viewer: shows an archived file in the page instead of downloading it.
+    // Pictures and text as they are, CSV as a table, the STL and the job's toolpath as a 3D view
+    // to turn with the mouse. It only reads (/passport/view); arrows step through the folder.
+    let ppFiles = [], pvIdx = -1, pvDraw = null;
+    async function ppView(i) {
+      if (!ppFiles.length) return;
+      pvIdx = (i + ppFiles.length) % ppFiles.length;
+      const f = ppFiles[pvIdx], idx = pvIdx, url = '/' + encodeURI(f);
+      document.getElementById('pv-title').textContent = f.split('/').slice(2).join('/') || f;
+      document.getElementById('pv-pos').textContent = (idx + 1) + ' / ' + ppFiles.length;
+      document.getElementById('pv-raw').href = url;
+      document.getElementById('pv-raw').setAttribute('download', f.split('/').pop());
+      document.getElementById('pv').classList.add('open'); document.getElementById('pv').setAttribute('aria-hidden', 'false');
+      document.getElementById('pv-shade').classList.add('open');
+      const body = document.getElementById('pv-body');
+      body.innerHTML = '<div class="pv-msg muted">Loading&hellip;</div>'; pvDraw = null;
+      let d;
+      try { d = await (await fetch('/passport/view?file=' + encodeURIComponent(f))).json(); }
+      catch (e) { d = {error: 'Could not read ' + f}; }
+      if (idx !== pvIdx) return;   // another file was opened meanwhile
+      if (d.error) { body.innerHTML = '<div class="pv-msg">' + esc(d.error) + '</div>'; return; }
+      const info = (d.info || []).map(([k, v]) => '<span><b>' + esc(k) + '</b> ' + esc(v) + '</span>').join('');
+      if (d.kind === 'image') body.innerHTML = '<div class="pv-img"><img src="' + esc(url) + '" alt=""></div>';
+      else if (d.kind === 'text') body.innerHTML = '<pre class="pv-text">' + esc(d.text) + '</pre>';
+      else if (d.kind === 'table') {
+        // A cell naming another archived file (the Automate log's pictures) opens that file.
+        const byName = {}; ppFiles.forEach((p, j) => { byName[p.split('/').pop()] = j; });
+        const cell = v => v in byName ? '<a href="#" onclick="ppView(' + byName[v] + '); return false">' + esc(v) + '</a>' : esc(v);
+        body.innerHTML = '<div class="pv-info"><span><b>Rows</b> ' + d.rows.length + '</span></div><div class="pv-table"><table class="nums"><thead><tr>' +
+          d.header.map(h => '<th>' + esc(h) + '</th>').join('') + '</tr></thead><tbody>' +
+          d.rows.map(r => '<tr>' + r.map(v => '<td>' + cell(v) + '</td>').join('') + '</tr>').join('') + '</tbody></table></div>';
+      } else {
+        const slider = d.kind === 'toolpath' && d.segs.length ? '<label class="pv-layers">Layers 1&ndash;<b id="pv-lnum"></b> ' +
+          '<input id="pv-layer" type="range" min="1" step="1"></label>' : '';
+        body.innerHTML = '<div class="pv-info">' + info + '<span class="muted">drag to turn &middot; shift-drag to move &middot; wheel to zoom &middot; double-click to reset</span>' +
+          slider + '</div><canvas id="pv-canvas"></canvas>';
+        pv3d(document.getElementById('pv-canvas'), d);
+      }
+    }
+    function pvClose() {
+      document.getElementById('pv').classList.remove('open'); document.getElementById('pv').setAttribute('aria-hidden', 'true');
+      document.getElementById('pv-shade').classList.remove('open');
+      document.getElementById('pv-body').innerHTML = ''; pvDraw = null;
+    }
+    window.addEventListener('resize', () => { if (pvDraw) pvDraw(); });
+
+    function pv3d(canvas, d) {
+      const mesh = d.kind === 'mesh', a = mesh ? d.tris : d.segs, step = mesh ? 3 : 6;
+      // Bounding box, from the triangle corners or the segment ends (x, y, z).
+      const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+      const grow = (x, y, z) => { [x, y, z].forEach((v, k) => { lo[k] = Math.min(lo[k], v); hi[k] = Math.max(hi[k], v); }); };
+      if (mesh) for (let i = 0; i < a.length; i += 3) grow(a[i], a[i + 1], a[i + 2]);
+      else for (let i = 0; i < a.length; i += 6) { grow(a[i], a[i + 1], a[i + 4]); grow(a[i + 2], a[i + 3], a[i + 4]); }
+      if (!a.length) { canvas.outerHTML = '<div class="pv-msg muted">Nothing to draw.</div>'; return; }
+      const c = lo.map((v, k) => (v + hi[k]) / 2), diag = Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) || 1;
+      const nLayers = mesh ? 0 : a[a.length - 1] + 1;
+      // Filament colour, darker for lower layers so the height reads.
+      const hex = (d.color || '#c8102e').replace('#', ''), rgb = [0, 2, 4].map(k => parseInt(hex.substr(k, 2), 16) || 0);
+      const tint = f => 'rgb(' + rgb.map(v => Math.round(v * f)).join(',') + ')';
+      const home = {yaw: -0.7, pitch: 0.6, zoom: 1, px: 0, py: 0};
+      let v = {...home}, top = nLayers;
+      const slider = document.getElementById('pv-layer');
+      if (slider) {
+        slider.max = nLayers; slider.value = nLayers; document.getElementById('pv-lnum').textContent = nLayers;
+        slider.oninput = () => { top = +slider.value; document.getElementById('pv-lnum').textContent = top; redraw(); };
+      }
+      function draw() {
+        const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+        if (!w || !h) return;
+        canvas.width = w * dpr; canvas.height = h * dpr;
+        const g = canvas.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+        const s = v.zoom * Math.min(w, h) * 0.85 / diag, cy = Math.cos(v.yaw), sy = Math.sin(v.yaw),
+              cp = Math.cos(v.pitch), sp = Math.sin(v.pitch);
+        // Turn about the vertical axis (yaw), then tip towards the viewer (pitch). Returns [screen x, screen y, depth].
+        const P = (x, y, z) => {
+          x -= c[0]; y -= c[1]; z -= c[2];
+          const x1 = x * cy - y * sy, y1 = x * sy + y * cy;
+          return [w / 2 + v.px + x1 * s, h / 2 + v.py - (z * cp + y1 * sp) * s, y1 * cp - z * sp];
+        };
+        if (mesh) {
+          // Z-buffer, one cell per device pixel, so overlapping faces hide each other correctly.
+          const W = canvas.width, H = canvas.height, img = g.createImageData(W, H), px = img.data;
+          const zb = new Float32Array(W * H).fill(Infinity);
+          for (let i = 0; i < a.length; i += 9) {
+            const p = [P(a[i], a[i + 1], a[i + 2]), P(a[i + 3], a[i + 4], a[i + 5]), P(a[i + 6], a[i + 7], a[i + 8])]
+              .map(q => [q[0] * dpr, q[1] * dpr, q[2]]);
+            // Normal in view space, lit from over the viewer's left shoulder (both sides, whatever the winding).
+            const u = [p[1][0] - p[0][0], p[1][1] - p[0][1], (p[1][2] - p[0][2]) * s * dpr],
+                  q = [p[2][0] - p[0][0], p[2][1] - p[0][1], (p[2][2] - p[0][2]) * s * dpr];
+            const n = [u[1] * q[2] - u[2] * q[1], u[2] * q[0] - u[0] * q[2], u[0] * q[1] - u[1] * q[0]];
+            const len = Math.hypot(n[0], n[1], n[2]); if (!len) continue;
+            const lit = 0.3 + 0.7 * Math.abs(-0.35 * n[0] - 0.45 * n[1] - 0.82 * n[2]) / len;
+            const col = rgb.map(c => Math.min(255, c * lit));
+            const area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1]);
+            if (Math.abs(area) < 1e-9) continue;
+            const x0 = Math.max(0, Math.floor(Math.min(p[0][0], p[1][0], p[2][0]))), x1 = Math.min(W - 1, Math.ceil(Math.max(p[0][0], p[1][0], p[2][0])));
+            const y0 = Math.max(0, Math.floor(Math.min(p[0][1], p[1][1], p[2][1]))), y1 = Math.min(H - 1, Math.ceil(Math.max(p[0][1], p[1][1], p[2][1])));
+            for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+              const cx = x + 0.5, cy2 = y + 0.5;
+              const w0 = ((p[1][0] - cx) * (p[2][1] - cy2) - (p[2][0] - cx) * (p[1][1] - cy2)) / area;
+              const w1 = ((p[2][0] - cx) * (p[0][1] - cy2) - (p[0][0] - cx) * (p[2][1] - cy2)) / area;
+              const w2 = 1 - w0 - w1;
+              if (w0 < 0 || w1 < 0 || w2 < 0) continue;
+              const z = w0 * p[0][2] + w1 * p[1][2] + w2 * p[2][2], k = y * W + x;
+              if (z >= zb[k]) continue;
+              zb[k] = z; px[4 * k] = col[0]; px[4 * k + 1] = col[1]; px[4 * k + 2] = col[2]; px[4 * k + 3] = 255;
+            }
+          }
+          g.putImageData(img, 0, 0);
+        } else {
+          // One path per layer, bottom up when seen from above; the top layer shown is drawn brightest.
+          const byLayer = [];
+          for (let i = 0; i < a.length; i += 6) if (a[i + 5] < top) (byLayer[a[i + 5]] = byLayer[a[i + 5]] || []).push(i);
+          const order = byLayer.map((_, L) => L).filter(L => byLayer[L]);
+          if (v.pitch < 0) order.reverse();
+          g.lineCap = 'round'; g.lineWidth = Math.max(0.5, 0.42 * s);
+          for (const L of order) {
+            g.strokeStyle = L === top - 1 ? tint(1.15) : tint(0.35 + 0.55 * (L + 1) / Math.max(1, top)); g.beginPath();
+            for (const i of byLayer[L]) {
+              const p0 = P(a[i], a[i + 1], a[i + 4]), p1 = P(a[i + 2], a[i + 3], a[i + 4]);
+              g.moveTo(p0[0], p0[1]); g.lineTo(p1[0], p1[1]);
+            }
+            g.stroke();
+          }
+        }
+      }
+      // Turning redraws at most once a frame.
+      let drag = null, raf = 0;
+      const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; draw(); }); };
+      canvas.onpointerdown = e => { drag = {x: e.clientX, y: e.clientY, pan: e.shiftKey || e.button !== 0}; canvas.setPointerCapture(e.pointerId); };
+      canvas.onpointermove = e => {
+        if (!drag) return;
+        const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+        if (drag.pan) { v.px += dx; v.py += dy; }
+        else { v.yaw += dx * 0.01; v.pitch = Math.max(-1.55, Math.min(1.55, v.pitch + dy * 0.01)); }
+        redraw();
+      };
+      canvas.onpointerup = canvas.onpointercancel = () => { drag = null; };
+      canvas.oncontextmenu = e => e.preventDefault();
+      canvas.addEventListener('wheel', e => { e.preventDefault(); v.zoom = Math.max(0.2, Math.min(20, v.zoom * Math.exp(-e.deltaY * 0.0015))); redraw(); }, {passive: false});
+      canvas.ondblclick = () => { v = {...home}; draw(); };
+      pvDraw = draw; draw();
+    }
     </script>
     """
 
@@ -1316,6 +1582,8 @@ class Handler(BaseHTTPRequestHandler):
                 if rec is None:
                     raise ValueError(f"No record for {q.get('part', '').strip()}")
                 self._send_json(rec)
+            elif path == "/passport/view":
+                self._send_json(_view_print_file(q.get("file", "")))
             elif path == "/passport/decide":
                 track.decide(q.get("part", ""), q.get("decision", ""), q.get("reason", ""))
                 self._send_json({"ok": True})

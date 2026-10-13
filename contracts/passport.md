@@ -49,6 +49,8 @@ def passport(part_number: str) -> dict
 
 **2026-10-11:** 7. **Full record on request.** The card has a **Full record** button, and the Print, Inspection, Assembly and Status lines each have a **details** link. Each opens a side panel over the page with every event of the record, oldest first, with its time, station and what, and a link to the record's JSON file. A details link marks the events behind that line (Print: the Print tab, printer, Automate and Track tab stations; Inspection and Assembly: that station; Status: the events that set `status`) and fades the rest. The panel only reads: it adds nothing to the record. It closes with its close button, Esc or a click beside it, and opening another part closes it. So the card stays one screen (rule 2), and the QC manager can still check any line they doubt.
 
+**2026-10-12:** 8. **Print data opens in the page.** Clicking a print data link opens the file in a viewer over the page instead of downloading it: pictures as they are, CSV files as a table (a cell naming an archived picture opens it), the `.slice` record as text, the STL as a shaded 3D view and the `.gcode.3mf` as its extrusion toolpath in 3D with a layer slider, its predicted time and its filament. The 3D views turn with the mouse. The arrows step through the folder's files, **Download** still saves the file, and Esc closes the viewer. The viewer reads only from `prints/` (rule 6) and adds nothing to the record.
+
 ## The decisions
 
 **The stakeholder** is a brand's QC manager, chosen over the boutique buyer and the end customer. The QC manager is the person who decides whether a part enters the production run, and that decision needs the print and inspection evidence.

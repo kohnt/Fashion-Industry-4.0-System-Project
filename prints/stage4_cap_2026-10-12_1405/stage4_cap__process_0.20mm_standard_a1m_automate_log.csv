@@ -1,0 +1,28 @@
+picture file,layer,label,confidence,printer state,action,Part 1 row
+p001_t0179.jpg,1,none,0.66,RUNNING,checked,1
+p002_t0194.jpg,1,none,0.58,RUNNING,checked,1
+p003_t0209.jpg,2,none,0.68,RUNNING,checked,1
+p004_t0224.jpg,2,none,0.78,RUNNING,checked,1
+p005_t0239.jpg,3,none,0.72,RUNNING,checked,1
+p006_t0254.jpg,4,none,0.76,RUNNING,checked,1
+p007_t0269.jpg,5,none,0.76,RUNNING,checked,1
+p008_t0284.jpg,7,none,0.72,RUNNING,checked,1
+p009_t0299.jpg,8,none,0.73,RUNNING,checked,1
+p010_t0314.jpg,9,none,0.64,RUNNING,checked,1
+p011_t0329.jpg,11,none,0.62,RUNNING,checked,1
+p012_t0344.jpg,12,none,0.62,RUNNING,checked,1
+p013_t0359.jpg,14,light,0.57,RUNNING,checked,5
+p014_t0374.jpg,15,none,0.68,RUNNING,checked,1
+p015_t0389.jpg,16,none,0.82,RUNNING,checked,1
+p016_t0404.jpg,18,none,0.58,RUNNING,checked,1
+p017_t0419.jpg,19,none,0.72,RUNNING,checked,1
+p018_t0434.jpg,20,none,0.72,RUNNING,checked,1
+p019_t0449.jpg,21,none,0.72,RUNNING,checked,1
+p020_t0464.jpg,22,none,0.57,RUNNING,checked,1
+p021_t0479.jpg,22,none,0.76,RUNNING,checked,1
+p022_t0494.jpg,23,none,0.76,RUNNING,checked,1
+p023_t0509.jpg,24,light,0.58,RUNNING,checked,5
+p024_t0524.jpg,24,none,0.78,RUNNING,checked,1
+p025_t0539.jpg,25,none,0.62,RUNNING,checked,1
+p026_t0554.jpg,25,none,0.76,RUNNING,checked,1
+p027_t0569.jpg,25,light,0.62,FINISH,pause not confirmed,3
